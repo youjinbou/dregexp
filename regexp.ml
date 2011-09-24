@@ -1,10 +1,25 @@
+(*
+
+  implementation of a Regular Expression DFA constructor from 
+  RE derivatives.
+
+  Papers :
+
+  [1] Derivatives of regular expressions (Brzozowski)
+
+  [2] Regular expression derivatives reexamined (Owens,Reppy,Turron)
+
+*)
+
 module type STRING_SIMPLE =
 sig
   type t
-  type char_t
+  type char
+  val make     : int -> char -> t
   val length   : t -> int
   val sub      : t -> int -> int -> t
-  val get      : t -> int -> char_t
+  val get      : t -> int -> char
+  val set      : t -> int -> char -> unit
   val compare  : t -> t   -> int
 end
 
@@ -12,9 +27,7 @@ end
 module Extend (S : STRING_SIMPLE) =
 struct
 
-  let length = S.length
-  let sub    = S.sub
-  let get    = S.get
+  include S
     
   (* substract s2 to s1 *)
   let substract s1 s2 = 
@@ -34,12 +47,12 @@ end
 module type STRING =
 sig
   type t
-  type char_t
+  type char
   val length    : t -> int
   val sub       : t -> int -> int -> t
-  val get       : t -> int -> char_t
+  val get       : t -> int -> char
   val compare   : t -> t   -> int
-  val substract : t -> t   -> t
+  val substract : t -> t   -> t option
 end
 
 module Make (S : STRING) =
@@ -56,19 +69,21 @@ struct
   type t = 
       EmptySet
     | EmptyString
-    | Atom     of S.char_t
-    | Concat   of t * t
-    | Kleene   of t 
+    | Any
+    | Atom     of S.char
+    | Concat   of t * t     
+    | Kleene   of t           (* '*' operator *)
     | Or       of t * t
     | And      of t * t
     | Not      of t
 
-  (* delta function *)
+  (* delta function - v (nu) in [2] *)
   let rec delta r = 
     match r with
 	EmptySet      -> EmptySet
       | EmptyString   -> EmptyString
-      | String _      -> EmptySet
+      | Any           -> EmptySet
+      | Atom _        -> EmptySet
       | And (a,b)
       | Concat (a,b)  -> (
 	match delta a, delta b with
@@ -76,7 +91,7 @@ struct
 	  | _, EmptySet -> EmptySet
 	  | _, _        -> EmptyString
       )
-      | Kleene a      -> delta a
+      | Kleene a      -> EmptyString
       | Or (a,b)      -> (
 	match delta a, delta b with
 	    EmptyString, _ -> EmptyString
@@ -89,30 +104,61 @@ struct
 	  | _              -> EmptySet
       )
 
-  (* compute the regexp derivation *)
-  let rec deriv c r = 
+  let concat a b = 
+    match a, b with
+	EmptySet, _
+      | _, EmptySet    -> EmptySet 
+      | EmptyString, _ -> b
+      | _, EmptyString -> a
+      | _, _           -> Concat (a,b)
+	
+  let kleene a = Kleene a
+
+  let and_op a b =
+    match a, b with
+	EmptySet, _ 
+      | _, EmptySet    -> EmptySet
+      | _, _           -> And (a,b)
+
+  let or_op a b = 
+    match a, b with
+	EmptySet, _    -> b
+      | _, EmptySet    -> a
+      | _, _           -> Or (a,b)
+
+  let not_op a = Not a
+
+  (* compute the regexp derivation - d (delta) in [2] *)
+  let rec derive c r = 
     match r with
 	EmptySet          -> EmptySet
       | EmptyString       -> EmptySet
+      | Any               -> EmptyString
       | Atom a when c = a -> EmptyString
       | Atom _            -> EmptySet
-(*
-      | String s          -> String (substract s c)
-*)
-      | Concat (a,b)      -> (
-	let da = deriv c a in
-	match delta a with
-	    EmptyString -> Concat (da, deriv c b)
-	  | _           -> Concat (da, b)
-      )
-      | Kleene a          -> Concat (deriv c a, Kleene a)
-      | And (a,b)         -> And (deriv c a, deriv c b)
-      | Or  (a,b)         -> Or (deriv c a, deriv c b)
-      | Nor a             -> Not (deriv c a)
+      | Concat (a,b)      ->
+	or_op (concat (derive c a) b) (concat (delta a) (derive c b))
+      | Kleene a          -> concat (derive c a) (kleene a)
+      | And (a,b)         -> and_op (derive c a) (derive c b)
+      | Or  (a,b)         -> or_op (derive c a) (derive c b)
+      | Not a             -> not_op (derive c a)
+
+  (* check whether s is parsed by re *)
+  let match_ re s : bool = 
+    let rec match_re re s i m =
+      if i >= m then delta re = EmptyString
+      else
+	match derive (S.get s i) re with
+	    EmptySet    -> false
+	  | d           -> match_re d s (succ i) m
+    in
+    match_re re s 0 (S.length s)
 
 
   (* input symbol set *)
   module SymbolSet = Set.Make(S)
+
+  let empty_set = SymbolSet.empty
 
   (* a transition is an arc from a given state to an another state
      this arc carries one or more input symbols
@@ -125,6 +171,7 @@ struct
         = map of symbols to arcs
   *)
 
+(*
   module Transition =
   struct
 
@@ -169,7 +216,7 @@ struct
   type 'a dfa_t = StateSet.t * State.t * StateSet.t * transition_fun_t
 
   let rec goto s c (qset, delta) =
-    let qc = deriv c (State.re s)
+    let qc = derive c (State.re s)
     in
     (* search the state(qc) *)
         (* found? 
@@ -184,14 +231,14 @@ struct
       | None    -> 
       in explore (Q , delta , qc )
 
-  and explore (Q, delta, q) = fold (goto q) (Q, delta) Σ
+  and explore (Q, delta, q) = fold (goto q) (Q, delta) 
 
 (*
   let make r =
-    let q0 = deriv EmptyString r in
+    let q0 = derive EmptyString r in
     let (Q, delta) = explore ({q0 }, {}, q0 ) in
     let F = {q | q ∈ Q and ν(q) = ε}
     in Q, q0 , F, delta
 *)
-
+*)
 end
