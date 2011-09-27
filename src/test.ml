@@ -1,7 +1,19 @@
 
+module Char : Regexp.CHAR with type t = char = 
+struct 
+  type t = char
+  let succ x = Char.chr (succ (Char.code x))
+  let pred x = Char.chr (pred (Char.code x))
+  let compare = Pervasives.compare 
+
+end
+
+
 (* expose the types to simplify things a bit *)
-module String_simple : Regexp.STRING_SIMPLE with type char = Char.t and type t = string =
+module String_simple : Regexp.STRING_SIMPLE with type t = string and module Char = Char =
 struct
+
+  module Char = Char
 
   include String
 
@@ -9,18 +21,10 @@ struct
 
 end
 
-module type CHAR = 
-sig
-
-  type t
-    
-  val code : t -> int
-  val chr  : int -> t
-
-end
-
-module Utils(S : Regexp.STRING_SIMPLE) (C : CHAR with type t = S.char) =
+module Utils(S : Regexp.STRING_SIMPLE) =
 struct
+
+  module C = S.Char
 
 (*
   let rec iterf iterate f s =
@@ -39,6 +43,7 @@ struct
       f (S.get s i)
     done
       
+(*
   let init c f =
     let s = S.make c (C.chr 0) in
     for i = 0 to pred c do
@@ -51,6 +56,7 @@ struct
     and bc = C.code b in
     let ac, bc = if ac > bc then bc, ac else ac, bc in
     init (bc - ac + 1) (fun i -> C.chr (i + ac))
+*)
 
   let fold_left f a s =
     let acc = ref a in
@@ -64,16 +70,17 @@ struct
 
 end
 
-module REString = Regexp.Extend(String_simple)
+module REString = Regexp.Extend(String_simple) 
 
 module RE = Regexp.Make(REString)
 
-module REU = Utils(REString)(Char)
+module REU = Utils(REString)
 
 type s_re = 
   | SEmpty
   | SAny
   | SAtom    of string
+  | SSet     of char list
   | SRange   of char * char
   | SConcat  of s_re * s_re
   | SKleene  of s_re
@@ -90,10 +97,11 @@ and not_op = RE.not_op
 
 (* convert a string based regexp to a char based one *)
 let rec convert : s_re -> RE.t = function
-  | SEmpty           -> RE.EmptyString
+  | SEmpty           -> RE.Epsilon
   | SAny             -> RE.Any
-  | SAtom   s        -> REU.fold_right (fun x acc -> concat (RE.Atom x) acc) s RE.EmptyString
-  | SRange  (a,b)    -> REU.fold_right (fun x acc -> or_op (RE.Atom x) acc) (REU.range a b) RE.EmptySet
+  | SAtom   s        -> REU.fold_right (fun x acc -> concat (RE.Set [x]) acc) s RE.Epsilon
+  | SSet    s        -> RE.Set s
+  | SRange  (a,b)    -> RE.CR.make a b
   | SConcat (r1, r2) -> concat (convert r1) (convert r2)
   | SKleene r        -> kleene (convert r)
   | SOr     (r1, r2) -> or_op (convert r1) (convert r2)
@@ -109,29 +117,35 @@ let re_az =
   convert (SKleene(SRange('a','z')))
 
 let re_az' = 
-  RE.concat re_az (RE.Atom '!')
+  RE.concat re_az (RE.Set ['!'])
 
-(* simple web url : http://[A-Za-z0-9-_]+(.[A-Za-z0-9-_]+)+/[A-Za-z0-9-_.]+(/[A-Za-z0-9-_.]+)+ *)
+
+let re_abc = 
+  convert (SOr (SOr (SAtom "a", SConcat (SAtom "b", SAtom "a")), SAtom "c"))
+
+
+let alpha = SOr(SRange ('a','z'),SRange ('A', 'Z'))
+let num   = SRange('0','9')
+
+(* simple web url : http://[A-Za-z0-9-_]+(.[A-Za-z0-9-_]+)+/[A-Za-z0-9-_.]+(/[A-Za-z0-9-_.]+)* *)
 let re_url = 
-  let x = 
+  convert (
+
     let letter = 
-      SOr(SOr(SRange ('a','z'),
-	      SRange('0','9')),
-	  SOr(SRange ('A', 'Z'),
-	      SOr (SAtom "-",SAtom "_"))
+      SOr(SOr(alpha, num),
+	  SSet [ '-'; '_']
       ) in
-    let word = SConcat (letter, SKleene letter) in
+    let word = 
+      SConcat (letter, SKleene letter) in
+
     let address = 
       SConcat(
-	SConcat(
-	  SAtom "http://",
-	  SConcat (word, 
-		   SKleene(SConcat(SAtom ".",
-				   word)
-		   )
-	  )
-	),
-	SOr (SEmpty, SAtom "/")
+	SAtom "http://",
+	SConcat (word, 
+		 SKleene(SConcat(SAtom ".",
+				 word)
+		 )
+	)
       )
     and page = 
       let folder =
@@ -140,9 +154,42 @@ let re_url =
 	in
 	SConcat (fletter, SKleene fletter)
       in
-      SConcat(folder, SKleene (SConcat (SAtom "/", folder)))
+      SOr (SEmpty, 
+	   SConcat (
+	     SAtom "/",
+	     SConcat(folder, SKleene (SConcat (SAtom "/", folder)))
+	   )
+      )
     in
-    SConcat(address,SKleene(page))
-  in 
-  convert x
+    SConcat(address,page)
+  )
+
+(* 
+   some form of email address :
+   email = <name>([.+-_]<name>)*@<domain>
+*)
+let re_email = 
+  convert (
+    let alphanum = SOr(alpha, num) in
+    let dletter = SOr(alphanum, SSet ['-';'_' ]) in
+    let name = SConcat(alpha,SKleene(alphanum))
+    and punct = SSet [ '.' ; '+'; '-' ; '_' ]
+    and arob  = SSet [ '@' ] 
+    and dword = SConcat (dletter, SKleene(dletter)) in
+    let domain = SConcat ( SKleene (SConcat (dword, SSet ['.'])),
+			   SConcat ( SConcat (dword, SSet ['.']),
+				     dword
+			   ))
+    in
+    SConcat (
+      SConcat (
+	SConcat(name, SKleene (SConcat (punct, name))),
+	arob),
+      domain
+    )
+  )
+
+let _ =
+  assert (RE.match_ re_url "http://www.yahoo.fr/mail/admin");
+  assert (not (RE.match_ re_url "http://www.yahoo.fr/mail/admin/"))
 
