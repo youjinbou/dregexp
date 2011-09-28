@@ -5,6 +5,9 @@ struct
   let succ x = Char.chr (succ (Char.code x))
   let pred x = Char.chr (pred (Char.code x))
   let compare = Pervasives.compare 
+  let print = print_char
+
+  let any = 'a'
 
 end
 
@@ -99,9 +102,9 @@ and not_op = RE.not_op
 let rec convert : s_re -> RE.t = function
   | SEmpty           -> RE.Epsilon
   | SAny             -> RE.Any
-  | SAtom   s        -> REU.fold_right (fun x acc -> concat (RE.Set [x]) acc) s RE.Epsilon
-  | SSet    s        -> RE.Set s
-  | SRange  (a,b)    -> RE.CR.make a b
+  | SAtom   s        -> REU.fold_right (fun x acc -> concat (RE.Set (RE.CS.singleton x)) acc) s RE.Epsilon
+  | SSet    s        -> List.fold_right (fun x acc -> or_op (RE.Set (RE.CS.singleton x)) acc) s RE.Epsilon
+  | SRange  (a,b)    -> RE.Set (RE.CS.range a b)
   | SConcat (r1, r2) -> concat (convert r1) (convert r2)
   | SKleene r        -> kleene (convert r)
   | SOr     (r1, r2) -> or_op (convert r1) (convert r2)
@@ -110,25 +113,25 @@ let rec convert : s_re -> RE.t = function
   | Re      r        -> r
 
 (* universal pattern *)
-let re_uni = RE.Kleene(RE.Any)  
+let uni = RE.Kleene(RE.Any)  
 
 (* lowercase alphabet *)
-let re_az =
+let az =
   convert (SKleene(SRange('a','z')))
 
-let re_az' = 
-  RE.concat re_az (RE.Set ['!'])
+let az' = 
+  RE.concat az (RE.Set (RE.CS.singleton '!'))
 
 
-let re_abc = 
-  convert (SOr (SOr (SAtom "a", SConcat (SAtom "b", SAtom "a")), SAtom "c"))
+let abac = 
+  convert (SOr (SOr (SAtom "a",SAtom "ba"), SAtom "c"))
 
 
 let alpha = SOr(SRange ('a','z'),SRange ('A', 'Z'))
 let num   = SRange('0','9')
 
 (* simple web url : http://[A-Za-z0-9-_]+(.[A-Za-z0-9-_]+)+/[A-Za-z0-9-_.]+(/[A-Za-z0-9-_.]+)* *)
-let re_url = 
+let url = 
   convert (
 
     let letter = 
@@ -168,7 +171,7 @@ let re_url =
    some form of email address :
    email = <name>([.+-_]<name>)*@<domain>
 *)
-let re_email = 
+let email = 
   convert (
     let alphanum = SOr(alpha, num) in
     let dletter = SOr(alphanum, SSet ['-';'_' ]) in
@@ -190,6 +193,7 @@ let re_email =
   )
 
 let _ =
-  assert (RE.match_ re_url "http://www.yahoo.fr/mail/admin");
-  assert (not (RE.match_ re_url "http://www.yahoo.fr/mail/admin/"))
+  assert (RE.string_match url "http://www.yahoo.fr/mail/admin");
+  assert (RE.string_match url "http://www.yahoo.fr/mail/admin/");
+  assert (not (RE.string_match url "http://www.yahoo.fr/mail?foo"))
 
