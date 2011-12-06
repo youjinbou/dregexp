@@ -11,7 +11,7 @@
 
 *)
 
-(* the char type 
+(* char type 
    - must support pred and succ operators
    - must provide at least one value (any)
 *)
@@ -21,6 +21,7 @@ sig
 
   type t
 
+  (* sample value *) 
   val any     : t
     
   val succ    : t -> t
@@ -28,11 +29,12 @@ sig
 
   val compare : t -> t -> int
 
-  val print  : t -> unit
+  val print   : t -> unit
 
 end
 
-module type STRING_SIMPLE =
+(* minimal string type module signature for regexp *)
+module type STRING =
 sig
 
   module Char : CHAR
@@ -47,46 +49,7 @@ sig
   val compare  : t -> t   -> int
 
 end
-
-(* provides a substract function *)
-module Extend (S : STRING_SIMPLE) =
-struct
-
-  include S
-    
-  (* substract s2 to s1 *)
-  let substract s1 s2 = 
-    let l1 = length s1 
-    and l2 = length s2 
-    in
-    let rec ib i =
-      if i = -1 
-      then Some (sub s1 l2 (l2 - l1))
-      else
-	if (get s1 i) = (get s2 i) then ib (pred i)
-	else None
-    in ib (pred l2)
-
-end
-
-module type STRING =
-sig
-
-  module Char : CHAR
-
-  type t
-
-  val make      : int -> Char.t -> t
-  val length    : t -> int
-  val sub       : t -> int -> int -> t
-  val get       : t -> int -> Char.t
-  val set       : t -> int -> Char.t -> unit
-  val compare   : t -> t   -> int
-  val substract : t -> t   -> t option
-
-end
-
-(* regexp over the string S.t *)
+(** regexp functor over the string S.t *)
 module Make (S : STRING) =
 struct
 
@@ -102,19 +65,56 @@ struct
 
   module CS = Rangeset.Make(C)
 
-  (* regexp language def *)
+  (** primitive regexp language definition *)
   type t = 
-      Epsilon                 (* empty string    *)
-    | Any                     (* universal match => could be implemented using Not Empty Set *)
+      Epsilon                   (* empty string       *)
+    | Any                       (* universal match - could be implemented using Not EmptySet *)
     | EmptySet                
-    | Set      of CS.t        (* non empty char set *)
-    | Concat   of t pair      (* r . s           *)
-    | Kleene   of t           (* r*              *)
-    | Or       of t pair      (* r + s           *)
-    | And      of t pair      (* r & s           *)
-    | Not      of t           (* ...             *)
+    | Set      of CS.t          (* non empty char set *)
+    | Concat   of t pair        (* r . s              *)
+    | Kleene   of t             (* r*                 *)
+    | Repeat   of t * int       (* r{0,n}             *) 
+    | Or       of t pair        (* r + s              *)
+    | And      of t pair        (* r & s              *)
+    | Not      of t             (* ...                *)
 
-  let compare (a: t) (b: t) = Pervasives.compare a b
+  (** comparison function using the CS comparison operator when needed *)
+  let rec compare a b = 
+    match a, b with
+    | Epsilon , Epsilon 
+    | Any     , Any
+    | EmptySet, EmptySet             -> 0
+    | Set s1, Set s2                 -> CS.compare s1 s2
+    | Not    x, Not y 
+    | Kleene x, Kleene y             -> compare x y
+    | Or     (x1,x2), Or (y1,y2)
+    | And    (x1,x2), And (y1,y2)
+    | Concat (x1,x2), Concat (y1,y2) -> (
+      match compare x1 y1 with
+	  0 -> compare x2 y2
+	| v -> v
+    )
+    | Repeat (x,k1), Repeat (y,k2) when k1 = k2 -> compare x y
+    | k1, k2 -> 
+      (* here we know that the two values CANNOT be equal, so we might as well rely on 
+	 the structural comparison, which should apply the same ordering *)
+      Pervasives.compare k1 k2
+
+  (* regular expression pretty printer *)
+  let rec pprint = 
+    let parens f =
+      print_string "("; f (); print_string ")" in
+    function
+    | Epsilon        -> print_string "ε"
+    | Any            -> print_string "."
+    | EmptySet       -> print_string "[]"
+    | Set s          -> print_string "[";CS.pprint s; print_string "]"
+    | Concat (r1,r2) -> pprint r1; pprint r2
+    | Or     (r1,r2) -> pprint r1; print_string "|"; pprint r2
+    | And    (r1,r2) -> pprint r1; print_string "&"; pprint r2
+    | Kleene  r      -> parens (fun () -> pprint r); print_string "*"
+    | Repeat (r,k)   -> parens (fun () -> pprint r);print_string "{"; print_int k; print_string"}"
+    | Not     r      -> print_string "!";parens (fun () -> pprint r)
 
   (* -------------------------------------- *)
 
@@ -124,7 +124,7 @@ struct
 	EmptySet      -> EmptySet
       | Epsilon       -> Epsilon
       | Any           -> EmptySet
-      | Set s         -> EmptySet
+      | Set _         -> EmptySet
       | And (a,b)
       | Concat (a,b)  -> (
 	match delta a, delta b with
@@ -132,7 +132,8 @@ struct
 	  | _, EmptySet   -> EmptySet
 	  | _, _          -> Epsilon
       )
-      | Kleene a      -> Epsilon
+      | Kleene _      -> Epsilon
+      | Repeat (a,x)  -> Epsilon  (* == Epsilon | a | a.a | a.a.a ... => Epsilon *)
       | Or (a,b)      -> (
 	match delta a, delta b with
 	    Epsilon, _ -> Epsilon
@@ -162,18 +163,26 @@ struct
       | _, _             -> Concat (a, b)
 	
   let kleene = function
+    | Epsilon
     | EmptySet     -> Epsilon
     | Kleene a 
+    | Repeat (a,_)
     | a            -> Kleene a
 
+  let repeat x = function
+    | Epsilon
+    | EmptySet     -> Epsilon
+    | Kleene a     -> Kleene a
+    | a            -> Repeat (a, x)
+  
   let and_op a b =
     match a, b with
 	EmptySet, _ 
       | _, EmptySet        -> EmptySet
       | Any, _             -> b
       | _, Any             -> a
+      | a,b when compare a b = 0 -> a
       | Set s1, Set s2     -> intersect s1 s2
-      | a,b when a = b     -> a
       | And(a,b),c         -> And (a, And (b,c))
       | _, _               -> And (a,b)
 
@@ -184,8 +193,8 @@ struct
       | _, Any             -> Any
       | EmptySet, _        -> b
       | _, EmptySet        -> a
+      | a,b when compare a b = 0 -> a
       | Set s1, Set s2     -> Set (CS.merge s1 s2)
-      | a,b when a = b     -> a
       | Or(a,b),c          -> Or (a, Or (b,c))
       | _, _               -> Or (a,b)
 
@@ -207,6 +216,12 @@ struct
       | Concat (a,b)          ->
 	or_op (concat (derive c a) b) (concat (delta a) (derive c b))
       | Kleene a              -> concat (derive c a) (kleene a)
+      | Repeat (a,x)          -> (
+	match x with
+	    0 -> EmptySet 
+	  | 1 -> derive c a
+	  | _ -> concat (derive c a) (repeat (pred x) a)
+      )
       | And (a,b)             -> and_op (derive c a) (derive c b)
       | Or  (a,b)             -> or_op (derive c a) (derive c b)
       | Not a                 -> not_op (derive c a)
@@ -223,38 +238,53 @@ struct
     in
     match_re re s 0 (S.length s)
 
-  (* Character Set Classes construction *)
+  (* Derivative CharSet Classes construction
+     it's basically an alphabet based (that is discrete) set arithmetic augmented with the inverse operator,
+     i.e. INVERSE(E) = SIGMA - E where SIGMA is the whole alphabet
+  *)
   module Class =
   struct
 
     type re = t
 
-    (* add an element to a list - no duplicate *)
-    let rec add compare l c = 
+    let pprint_re = pprint
+
+    (* add an element to a sorted list - no duplicate *)
+    let rec add comp l c = 
       match l with
 	| []    -> [c]
-	| x::xs -> match compare x c with
-	    | -1 -> x::(add compare xs c)
-	    |  0 -> l
-	    |  _ -> c::l
+	| x::xs -> match comp x c with
+	    | 0            -> l
+	    | v when v < 0 -> x::(add comp xs c)
+	    | _            -> c::l
 
-    (* n² combinations of f on l1 l2 elements without duplicate *)
-    let mapsqr compare (f: 'a -> 'b -> 'c)  (l1 : 'a list) (l2 : 'b list) : 'c list =
+    (* n� combinations of f on l1 l2 elements without duplicate *)
+    let mapsqr comp (f: 'a -> 'b -> 'c)  (l1 : 'a list) (l2 : 'b list) : 'c list =
       let map_one (f: 'a -> 'b -> 'c) (a : 'a) (l : 'b list) : 'c list = 
 	List.map (fun x -> f a x) l 
       in
       let f1 (acc : 'c list) (x : 'a) = 
-	List.fold_left (fun acc x -> add compare acc x) acc (map_one f x l2)
+	List.fold_left (fun acc x -> add comp acc x) acc (map_one f x l2)
       in
       List.fold_left f1 [] l1
 
-    let compare a b = Pervasives.compare a b
-      
     type expr = 
 	CSet of CS.t
       | CInvSet of CS.t
 
     type t = expr
+
+    let compare a b = 
+      match a, b with
+	  CSet x, CSet y
+	| CInvSet x, CInvSet y  -> CS.compare x y
+	| _,_  -> Pervasives.compare a b
+
+    let sort (l : t list) : t list  = List.sort compare l
+
+    let pprint = function
+      | CSet s      -> print_string "["; CS.pprint s; print_string "]"
+      | CInvSet s   -> print_string "[^"; CS.pprint s; print_string "]"
        
     let empty = CSet CS.empty
 
@@ -263,7 +293,8 @@ struct
       match l2 with
 	  []    -> l1
 	| x::xs -> merge (add compare l1 x) xs
-	  
+
+    (* this operation simplify the combination of x and y *)
     let inter (x : expr) (y : expr) : expr =
       match x,y with
 	  CSet s1, CSet s2       -> CSet (CS.intersect s1 s2)
@@ -278,18 +309,26 @@ struct
       let rec make = function
 	| EmptySet            -> [ CSet CS.empty ]
 	| Epsilon             -> [ CInvSet CS.empty ]
-	| Any                 -> [ CSet CS.empty; CInvSet CS.empty ]
-	| Set   s             -> [ CSet s ; CInvSet s ]
+	| Any                 -> sort [ (* CSet CS.empty ; *) CInvSet CS.empty ]
+	| Set   s             -> sort [ CSet s (* ; CInvSet s *) ]
 	| Concat (c1,c2) when
 	    not (nullable c1) -> make c1
 	| Concat (c1,c2)
+	| Or     (c1,c2)      -> merge (make c1) (make c2)
 	| And    (c1,c2)      -> intersect (make c1) (make c2)
-	| Or     (c1,c2)      -> intersect (make c1) (make c2)
 	| Not     n
 	| Kleene  n           -> make n
-      in make re
+	| Repeat  (n, _)      -> make n
+      in let res = make re in
+	 print_string "class : ";
+	 pprint_re re;
+	 print_string " -> ";
+	 List.iter pprint res; 
+	 print_newline ();
+	 res
 
     let sample c =
+      print_string "sampling "; pprint c; print_newline ();
       match c with
 	| CSet s    -> (
 	  if CS.empty = s 
@@ -310,6 +349,8 @@ struct
   struct
 
     type re = t
+    let pprint_re = pprint
+
 
     (* a transition is an arrow from one state to another labeled with a derivative 
        class. We have a limited number of charsets for each state, and a limited 
@@ -334,7 +375,6 @@ struct
 
       exception Error of String.t
 
-
       (* RegExp Derivatives Mapping *)
       module QSet = Map.Make(struct type t = re let compare = compare end)
 
@@ -356,11 +396,14 @@ struct
     
       (* dfa states ------------------- *)
 
+      let pprint_stateset (b : t) : unit = 
+	QSet.iter (fun k v -> pprint_re k; print_string " -> "; print_int v; print_newline ()) b.b_states
+
       let state_count (b : t) : int = AB.length b.b_transitions
 
       let add_state (b : t) (qc : re) : state = 
 	let count = AB.add b.b_transitions (AB.create 0 (-1,-1)) in
-	b.b_states  <- QSet.add qc count b.b_states;
+	b.b_states <- QSet.add qc count b.b_states;
 	count
 
       let find_state (b : t) (qc : re) : state = QSet.find qc b.b_states
@@ -372,19 +415,26 @@ struct
 
       (* input character class sets --- *)
 
+      let pprint_classset (b : t) = 
+	ClassSet.iter (fun k v -> Class.pprint k; print_string " -> "; print_int v; print_newline ()) b. b_classes
+
       let class_count (b : t) : int = b.b_ccount
 
       let find_class (b : t) (s : Class.t) : cs = ClassSet.find s b.b_classes
 
       let add_class (b : t) (s : Class.t) : cs =
+	let cnum = b.b_ccount in
+	b.b_classes <- ClassSet.add s cnum b.b_classes;
     	b.b_ccount  <- succ b.b_ccount;
-	b.b_classes <- ClassSet.add s b.b_ccount b.b_classes;
-	b.b_ccount
+	cnum
 	  
       let register_class (b : t) (s : Class.t) : bool * cs =
+	pprint_classset b;
+	print_string "registering class : "; Class.pprint s; print_newline ();
 	try 
 	  false, find_class b s 
 	with Not_found -> true, add_class b s
+
 
       (* dfa state transitions---------- *)
 
@@ -409,6 +459,9 @@ struct
 	  then raise (Error "invalid transition : trying to create a transition from state and character class leading to a different state");
 	with Not_found -> ignore (add_transition b source cs target)
 
+      let pprint_transitions b = 
+	AB.iter (fun i v -> AB.iter (fun j (cs,state) -> Printf.printf "%d : %d -> cs : %d, state : %d\n" i j cs state) v) b.b_transitions
+
       (* dfa construction algorithm  --- *) 
 
       let rec goto (q : re) (b : t) (set : Class.t) : t =
@@ -423,41 +476,174 @@ struct
 	    if n then explore qc b else b
 
       and explore (q : re) (b: t) : t = 
-	List.fold_left (fun acc x -> goto q acc x) b (Class.make q)
+	List.fold_left (fun b x -> goto q b x) b (Class.make q)
+
+      let pprint b = 
+	print_string "state count   : "; print_int (state_count b); print_newline ();
+	print_string "class count   : "; print_int (class_count b); print_newline ();
+	print_endline "states: -----------"; 
+	pprint_stateset b; 
+	print_endline "classes: ----------"; 
+	pprint_classset b; 
+	print_endline "transitions: ------"; 
+	pprint_transitions b;
+	print_endline "-------------------"
 	
       let make re = 
 	let b = {
 	  b_ccount       = 0;               
-	  b_states       = QSet.add re 0 QSet.empty;
+	  b_states       = (* QSet.add re 0 *) QSet.empty;
 	  b_classes      = ClassSet.empty;  
-	  b_transitions  = AB.create 1 (AB.create 0 (-1,-1));
-	} in explore re b
+	  b_transitions  = AB.create 5 (AB.create 5 (-1,-1));
+	} in
+	ignore (register_state b re);
+	let res = explore re b in
+	pprint b;
+	res
 
-      (* produce the DFA *)
+      (* construct the DFA *)
       let build (b : t) = 
+	let c_count = class_count b in
 	let fillup_state v ab =
-	  for i = 0 to AB.length ab do
+	  for i = 0 to pred (AB.length ab) do
 	    let cs, t = AB.nth ab i in
 	    v.(cs) <- t
 	  done
 	in
 	let make_state_transition b i = 
-	  let v = Array.make (class_count b) (-1) in
+	  let v = Array.make c_count (-1) in
 	  fillup_state v (AB.nth b.b_transitions i);
 	  v
 	in
-	let c = Array.make (class_count b) Class.empty in 
+	let c = Array.make c_count Class.empty in 
 	ClassSet.iter (fun cs i -> c.(i) <- cs) b.b_classes;
 	{
-	classes     = c;
-	transitions = Array.init (state_count b) (make_state_transition b);
-      }
+	  classes     = c;
+	  transitions = Array.init (state_count b) (make_state_transition b);
+	}
 	  
     end (* Builder *)
 
     let make re = 
       Builder.build (Builder.make re)
+
+    let dump dfa =
+      Array.iteri (fun k v -> print_int k; print_string ": "; Class.pprint v; print_newline ()) dfa.classes;
+      Array.iteri (fun i a -> Printf.printf "%02d : " i; Array.iter (fun v -> Printf.printf "%02d " v) a; print_newline ()) dfa.transitions
       
   end  (* DFA *)
+
+
+  (* intermediate string based regexp type *)
+  module SRegexp =
+  struct
+
+    module Utils =
+    struct
+
+      module C = S.Char
+
+    (*
+      let rec iterf iterate f s =
+      match iterate s with
+      Some c -> f c; iterf iterate f s
+      | None   -> ()
+    *)
+
+      let iter f s =
+	for i = 0 to pred (S.length s) do
+	  f (S.get s i)
+	done
+	  
+      let riter f s =
+	for i = pred (S.length s) downto 0 do
+	  f (S.get s i)
+	done
+	  
+    (*
+      let init c f =
+      let s = S.make c (C.chr 0) in
+      for i = 0 to pred c do
+      S.set s i (f i)
+      done;
+      s
+
+      let range a b = 
+      let ac = C.code a
+      and bc = C.code b in
+      let ac, bc = if ac > bc then bc, ac else ac, bc in
+      init (bc - ac + 1) (fun i -> C.chr (i + ac))
+    *)
+
+      let fold_left f a s =
+	let acc = ref a in
+	String.iter (fun c -> acc := f !acc c) s;
+	!acc
+
+      let fold_right (f : C.t -> 'a -> 'a) (s : S.t) (a : 'a) = 
+	let acc = ref a in
+	riter (fun c -> acc := f c !acc) s;
+	!acc
+
+    end
+    
+    type re = t (* renaming *)
+
+    type s_re = 
+      | SAny
+      | SAtom    of S.t
+      | SSet     of char list
+      | SRange   of char * char
+      | SConcat  of s_re * s_re
+      | SKleene  of s_re
+      | SRepeat  of s_re * int * int (* r{n,m} *)
+      | SOr      of s_re * s_re
+      | SAnd     of s_re * s_re
+      | SNot     of s_re
+      | Re       of re
+
+    (* convert a string based regexp to a char based one *)
+    let rec convert : s_re -> re = function
+      | SAny             -> Any
+      | SAtom   s        -> (
+	Utils.fold_right (fun x acc -> concat (Set (CS.singleton x)) acc) s Epsilon
+      )
+      | SSet    s        -> (
+	match s with 
+	    []    -> EmptySet
+	  | [x]   -> Set (CS.singleton (x))
+	  | x::xs -> Set (List.fold_right (fun x acc -> CS.merge (CS.singleton x) acc) s (CS.singleton x)
+	  )
+      )
+      | SRange  (a,b)    -> Set (CS.range a b)
+      | SConcat (r1, r2) -> concat (convert r1) (convert r2)
+      | SKleene r        -> kleene (convert r)
+      | SRepeat (r, x, y) -> 
+	assert ((x < y) && (x >= 0));
+	let m = y - x 
+	and r = convert r in
+	if x  = 0 
+	then repeat m r
+	else
+	  let c = if x > 1 
+	    then List.fold_right (fun x acc -> concat acc x) (Array.to_list (Array.make (pred x) r)) r 
+	    else r
+	  in concat c (repeat m r)
+      | SOr     (r1, r2) -> or_op (convert r1) (convert r2)
+      | SAnd    (r1, r2) -> and_op (convert r1) (convert r2)
+      | SNot    r        -> not_op (convert r)
+      | Re      r        -> r
+
+  end
+
+  (* parse regular expressions expressed as S.t, and returning S.t DFAs 
+     the regexp language is:
+  *)
+  module Parser =
+  struct
+
+    
+    
+  end
 
 end

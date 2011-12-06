@@ -1,20 +1,20 @@
 (* ---------------------------------------------------------------------
 
-     This code provided under the LGPL License V2
+   This code provided under the LGPL License V2
 
 
-     Buffer code lifted from the original Buffer module distributed with 
-     Ocaml:
-     "
-		Xavier Leroy, projet Cristal, INRIA Rocquencourt         
+   Buffer code lifted from the original Buffer module distributed with 
+   Ocaml:
+   "
+   Xavier Leroy, projet Cristal, INRIA Rocquencourt         
 
-      Copyright 1996 Institut National de Recherche en Informatique et   
-      en Automatique.  All rights reserved.  This file is distributed    
-      under the terms of the GNU Library General Public License, with    
-      the special exception on linking described in file ../LICENSE."
+   Copyright 1996 Institut National de Recherche en Informatique et   
+   en Automatique.  All rights reserved.  This file is distributed    
+   under the terms of the GNU Library General Public License, with    
+   the special exception on linking described in file ../LICENSE."
 
 
-     Thanks!
+   Thanks!
 
    --------------------------------------------------------------------- *)
 
@@ -31,14 +31,14 @@ sig
   val blit       : 'a t -> int -> 'a t -> int -> int -> unit
   val length     : 'a t -> int
   val max_length : int
-
+    
 end
 
 module Array : VECTOR with type 'a t = 'a array = 
 struct
 
   include Array
-  
+    
   type 'a t = 'a array
 
   let max_length = Sys.max_array_length
@@ -94,6 +94,8 @@ sig
   val add_subv   : 'a t -> 'a vector -> int -> int -> int
   val add_buffer : 'a t -> 'a t -> int
 
+  val iter       : (int -> 'a -> unit) -> 'a t -> unit
+
 end
 
 module type SMONO =
@@ -116,6 +118,8 @@ sig
   val add_vector : t -> vector -> int
   val add_subv   : t -> vector -> int -> int -> int
   val add_buffer : t -> t -> int
+
+  val iter       : (int -> e -> unit) -> t -> unit
 
 end
 
@@ -211,6 +215,12 @@ struct
   let add_buffer b bs =
     add_subv b bs.buffer 0 bs.position
 
+  let iter (f : int -> 'a -> unit) (b : 'a t) =
+    if b.position > 0 then
+    for i = 0 to pred b.position do
+      f i (V.get b.buffer i)
+    done
+
 end
 
 module ArrayBuffer = Make(Array)
@@ -252,7 +262,6 @@ struct
     then invalid_arg "VecBuffer.blit"
     else
       V.blit src.buffer srcoff dst dstoff len
-
 
   let nth b ofs =
     if ofs < 0 || ofs >= b.position then
@@ -306,6 +315,12 @@ struct
 
   let add_buffer b bs =
     add_subv b bs.buffer 0 bs.position
+
+  let iter f b =
+    if b.position > 0 then
+    for i = 0 to pred b.position do
+      f i (V.get b.buffer i)
+    done
 
 end
 
