@@ -93,6 +93,15 @@ struct
     in
     contains e l
 
+  let first = function
+    | []        -> invalid_arg "Rangeset.first : empty set"
+    | (a,b)::_  -> a
+
+  let rec last = function
+    | []        -> invalid_arg "Rangeset.last : empty set"
+    | [a,b]     -> b
+    | x::xs     -> last xs
+
   (* comparison function using the provided element comparison operator *)
   let compare a b = 
     let pcomp (x1,x2) (y1,y2) =
@@ -228,10 +237,6 @@ struct
       | []        -> ()
       | (a,b)::xs -> range_iter f a b; iter f xs
     in iter f s
-
-  let first = function
-    | []       -> invalid_arg "first"
-    | (a,b)::_ -> a   
 
 
 end

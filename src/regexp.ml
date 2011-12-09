@@ -41,40 +41,44 @@ sig
 
   type t
 
-  val make     : int -> Char.t -> t
   val length   : t -> int
-  val sub      : t -> int -> int -> t
   val get      : t -> int -> Char.t
-  val set      : t -> int -> Char.t -> unit
+(*  
+  val make     : int -> Char.t -> t
+  val sub      : t -> int -> int -> t 
+  val set      : t -> int -> Char.t -> unit 
   val compare  : t -> t   -> int
+*)
 
 end
+
 (** regexp functor over the string S.t *)
 module Make (S : STRING) =
 struct
 
   module C = S.Char
 
-  type string = S.t
+  type string_t = S.t
 
-  type char = S.Char.t
+  type char_t = S.Char.t  
 
   type 'a pair = 'a * 'a
 
-  open S
-
   module CS = Rangeset.Make(C)
+
+  (** sub-regexp annotation *)
+  type annot = int option
 
   (** primitive regexp language definition *)
   type t = 
       Epsilon                   (* empty string       *)
-    | Any                       (* universal match - could be implemented using Not EmptySet *)
-    | EmptySet                
+    | Any                       (* universal match    *)
+    | EmptySet                  (* empty char set     *)
     | Set      of CS.t          (* non empty char set *)
     | Concat   of t pair        (* r . s              *)
     | Kleene   of t             (* r*                 *)
     | Repeat   of t * int       (* r{0,n}             *) 
-    | Or       of t pair        (* r + s              *)
+    | Or       of t pair        (* r | s              *)
     | And      of t pair        (* r & s              *)
     | Not      of t             (* ...                *)
 
@@ -100,7 +104,7 @@ struct
 	 the structural comparison, which should apply the same ordering *)
       Pervasives.compare k1 k2
 
-  (* regular expression pretty printer *)
+  (** regular expression pretty printer *)
   let rec pprint = 
     let parens f =
       print_string "("; f (); print_string ")" in
@@ -118,7 +122,7 @@ struct
 
   (* -------------------------------------- *)
 
-  (* delta function - v (nu) in [2] *)
+  (** delta function - v (nu) in [2] *)
   let rec delta r = 
     match r with
 	EmptySet      -> EmptySet
@@ -152,7 +156,7 @@ struct
     let s = CS.intersect s1 s2 in
     if s = CS.empty then EmptySet else Set s
 
-  (* re pseudo constructors, which apply similarity rules reduction *)
+  (** re pseudo constructors, which apply similarity rules reduction *)
   let concat a b = 
     match a, b with
 	EmptySet, _
@@ -179,9 +183,10 @@ struct
     match a, b with
 	EmptySet, _ 
       | _, EmptySet        -> EmptySet
-      | Any, _             -> b
-      | _, Any             -> a
-      | a,b when compare a b = 0 -> a
+      | Any, Set _         -> b
+      | Set _, Any         -> a
+      | a,b when
+	  compare a b = 0  -> a
       | Set s1, Set s2     -> intersect s1 s2
       | And(a,b),c         -> And (a, And (b,c))
       | _, _               -> And (a,b)
@@ -189,11 +194,12 @@ struct
   let or_op a b = 
     match a, b with
       | EmptySet, EmptySet -> EmptySet
-      | Any, _
-      | _, Any             -> Any
       | EmptySet, _        -> b
       | _, EmptySet        -> a
-      | a,b when compare a b = 0 -> a
+      | Any, Set _
+      | Set _, Any         -> Any
+      | a,b when 
+	  compare a b = 0  -> a
       | Set s1, Set s2     -> Set (CS.merge s1 s2)
       | Or(a,b),c          -> Or (a, Or (b,c))
       | _, _               -> Or (a,b)
@@ -204,14 +210,14 @@ struct
     | Not x    -> x
     | a        -> Not a
 
-  (* compute the regexp derivation - d (delta) in [2] *)
+  (** compute the regexp derivation - d (delta) in [2] *)
   let rec derive c r = 
     match r with
-	EmptySet              -> EmptySet
-      | Epsilon               -> EmptySet
       | Any                   -> Epsilon
       | Set a when
 	  CS.contains a c     -> Epsilon
+      | EmptySet
+      | Epsilon               -> EmptySet
       | Set a                 -> EmptySet
       | Concat (a,b)          ->
 	or_op (concat (derive c a) b) (concat (delta a) (derive c b))
@@ -227,7 +233,7 @@ struct
       | Not a                 -> not_op (derive c a)
 
 
-  (* check whether s is parsed by re *)
+  (** check whether s is parsed by re *)
   let string_match re s : bool = 
     let rec match_re re s i m =
       if i >= m then nullable re (* we're in an accepting state if the current re accepts Epsilon *)
@@ -238,9 +244,11 @@ struct
     in
     match_re re s 0 (S.length s)
 
-  (* Derivative CharSet Classes construction
-     it's basically an alphabet based (that is discrete) set arithmetic augmented with the inverse operator,
-     i.e. INVERSE(E) = SIGMA - E where SIGMA is the whole alphabet
+  (** Derivative CharSet Classes construction module *)
+  (*
+     it's basically an alphabet based (i.e. discrete) set arithmetic augmented with 
+     the inverse operator :
+       INVERSE(E) = SIGMA - E where SIGMA is the whole alphabet
   *)
   module Class =
   struct
@@ -309,8 +317,8 @@ struct
       let rec make = function
 	| EmptySet            -> [ CSet CS.empty ]
 	| Epsilon             -> [ CInvSet CS.empty ]
-	| Any                 -> sort [ (* CSet CS.empty ; *) CInvSet CS.empty ]
-	| Set   s             -> sort [ CSet s (* ; CInvSet s *) ]
+	| Any                 -> (* sort *) [ (* CSet CS.empty ; *) CInvSet CS.empty ]
+	| Set   s             -> (* sort *) [ CSet s (* ; CInvSet s *) ]
 	| Concat (c1,c2) when
 	    not (nullable c1) -> make c1
 	| Concat (c1,c2)
@@ -319,16 +327,9 @@ struct
 	| Not     n
 	| Kleene  n           -> make n
 	| Repeat  (n, _)      -> make n
-      in let res = make re in
-	 print_string "class : ";
-	 pprint_re re;
-	 print_string " -> ";
-	 List.iter pprint res; 
-	 print_newline ();
-	 res
+      in make re
 
     let sample c =
-      print_string "sampling "; pprint c; print_newline ();
       match c with
 	| CSet s    -> (
 	  if CS.empty = s 
@@ -340,7 +341,7 @@ struct
 	  then                    (* any will do *)
 	    Some (C.any)
 	  else                    (* we need to find a char which is not in s *)
-	    Some (C.pred (CS.first s))
+	    Some (C.pred (CS.first s)) (* fix-me: hopefully, first of s has a predecessor *)
 	)
 
   end
@@ -429,8 +430,6 @@ struct
 	cnum
 	  
       let register_class (b : t) (s : Class.t) : bool * cs =
-	pprint_classset b;
-	print_string "registering class : "; Class.pprint s; print_newline ();
 	try 
 	  false, find_class b s 
 	with Not_found -> true, add_class b s
@@ -529,7 +528,7 @@ struct
 
     let dump dfa =
       Array.iteri (fun k v -> print_int k; print_string ": "; Class.pprint v; print_newline ()) dfa.classes;
-      Array.iteri (fun i a -> Printf.printf "%02d : " i; Array.iter (fun v -> Printf.printf "%02d " v) a; print_newline ()) dfa.transitions
+      Array.iteri (fun i a -> Printf.printf "%02d : " i; Array.iter (fun v -> Printf.printf "% 2d " v) a; print_newline ()) dfa.transitions
       
   end  (* DFA *)
 
@@ -592,8 +591,8 @@ struct
     type s_re = 
       | SAny
       | SAtom    of S.t
-      | SSet     of char list
-      | SRange   of char * char
+      | SSet     of char_t list
+      | SRange   of char_t * char_t
       | SConcat  of s_re * s_re
       | SKleene  of s_re
       | SRepeat  of s_re * int * int (* r{n,m} *)
@@ -606,7 +605,9 @@ struct
     let rec convert : s_re -> re = function
       | SAny             -> Any
       | SAtom   s        -> (
-	Utils.fold_right (fun x acc -> concat (Set (CS.singleton x)) acc) s Epsilon
+	match S.length s with
+	    0     -> EmptySet
+	  | _     -> Utils.fold_right (fun x acc -> concat (Set (CS.singleton x)) acc) s Epsilon
       )
       | SSet    s        -> (
 	match s with 
@@ -636,14 +637,265 @@ struct
 
   end
 
-  (* parse regular expressions expressed as S.t, and returning S.t DFAs 
-     the regexp language is:
-  *)
-  module Parser =
+  (** regexp parser parameters module *)
+  module type PARSER_CONF =
+  sig
+
+    type stream
+
+    exception EOF
+
+    type token =  
+	LPARENS
+      | RPARENS
+      | QMARK
+      | STAR
+      | PLUS
+      | MINUS
+      | PIPE
+      | LBRACE
+      | RBRACE
+      | LBRACKET
+      | RBRACKET
+      | BACKSLASH
+      | DOT
+      | COMMA
+      | DOLLAR
+      | CARRET
+      | ALPHA of char
+      | NUM   of char 
+      | OTHER of C.t
+
+    (** return the token at position in stream *)
+    val token : stream -> int -> token
+
+    (** tells whether we reached the end of the stream *)
+    val eof : stream -> int -> bool
+      
+    (** return the character corresponding to the given token *)
+    val to_char : token -> C.t
+
+
+  end
+  (** note : dealing with newline issues is userland responsibility, by crafting 
+      the correct regexpr *)
+
+  (** parser module for regular expressions *)
+  module Parser(Conf : PARSER_CONF) =
   struct
 
-    
-    
+    (* more pseudo constructors *)
+    let plus re = concat re (kleene re)
+
+    let power n re =
+      let rec fold acc k =
+	if k = 0
+	then acc
+	else fold (concat re acc) (pred k)
+      in
+      fold re n
+
+    let powerrep b e re = concat (power b re) (repeat (e-b) re)
+
+    open Conf
+
+    exception Failure of stream * int
+
+    type re = t
+
+    type infix = Ipipe
+
+    type postfix = Pqmark | Pplus | Pstar | Prange of int * int option
+
+    type lexeme =
+	LPar
+      | RPar
+      | Infix of infix
+      | Postfix of postfix
+      | R of re
+
+    let rec dump = 
+      let postfix = function
+	| Pqmark             -> print_string "Pqmark"
+	| Pplus              -> print_string "Pplus"
+	| Pstar              -> print_string "Pstar"
+	| Prange (b, Some e) -> print_string ("Prange ("^string_of_int b^","^string_of_int e^")")
+	| Prange (b, None)   -> print_string ("Prange ("^string_of_int b^")")
+      and infix = function
+	| Ipipe  -> print_string "Ipipe"
+      in
+      let lexeme = function
+	| LPar      -> print_string "("
+	| RPar      -> print_string ")"
+	| Infix o   -> infix o
+	| Postfix o -> postfix o
+	| R re      -> pprint re
+      in function
+	| x::xs -> dump xs; print_string " "; lexeme x
+	| []    -> ()
+
+    let merge  = CS.merge
+    let range  = CS.range
+    let single = CS.singleton
+    let addsingle x y = CS.merge x (CS.singleton y)
+	
+    let rconcat a b = concat b a
+
+    let parse_int (s : stream) (i : int) : int * int = 
+      let rec int0 accum s i =
+	if eof s i 
+	then i, accum
+	else 
+	match token s i with
+	  | NUM c        -> (
+	      let v = (Char.code c) - (Char.code '0') in
+	      int0 (accum * 10 + v) s (succ i)
+	  )
+	  | _            -> i, accum
+      in
+      int0 0 s i
+
+    let parse_backslash s i =
+      if eof s i 
+      then succ i, Set (single (to_char BACKSLASH))  (* fix-me: is this correct ? *)
+      else succ i, Set (single (to_char (token s i)))
+
+      (* either :
+	 - nothing read
+	 - one int read
+	 - one int and comma read
+      *)
+    let parse_range s i =
+      let rec range0 s i =
+	let ni, k = parse_int s i in 
+	range1 k s ni
+      and range1 (b : int) s i =
+	if eof s i 
+	then raise (Failure (s,i))
+	else 
+	match token s i with
+	    RBRACE   -> i, Prange (b, None)
+	  | COMMA    -> let ni, k = parse_int s (succ i)
+			in range2 b k s ni
+	  | _        -> raise (Failure (s, i))
+      and range2 (b : int) (e : int) s i =
+	if eof s i 
+	then raise (Failure (s,i))
+	else 
+	match token s i with
+	    RBRACE   -> i, Prange (b,Some e)
+	  | _        -> raise (Failure (s, i))
+      in 
+      range0 s i
+
+      (* either :
+	 - zero char read
+	 - one char read
+	 - one char and minus read
+      *)
+    let parse_set s i =
+      let rec set0 cs s i =
+	if eof s i 
+	then raise (Failure (s,i))
+	else 
+	match token s i with
+	  | RBRACKET  -> succ i, cs
+	  | BACKSLASH -> set1 cs (backslash s (succ i)) s (i + 2)
+	  | MINUS     -> raise (Failure (s,i))
+	  | c         -> set1 cs (Conf.to_char c) s (succ i)
+      and set1 cs b s i =
+	if eof s i 
+	then raise (Failure (s,i))
+	else 
+	match token s i with
+	  | RBRACKET  -> succ i, addsingle cs b
+	  | BACKSLASH -> set1 (addsingle cs b) (backslash s (succ i)) s (i + 2)
+	  | MINUS     -> set2 cs b s (succ i)
+	  | c         -> set1 (addsingle cs b) (Conf.to_char c) s (succ i)
+      and set2 cs b s i =
+	if eof s i 
+	then raise (Failure (s,i))
+	else 
+	match token s i with
+	  | RBRACKET  -> succ i, addsingle (addsingle cs b) (Conf.to_char MINUS)
+	  | BACKSLASH -> set0 (merge cs (range b (backslash s (succ i)))) s (i + 2)
+	  | c         -> set0 (merge cs (range b (Conf.to_char c))) s (succ i)
+      and backslash s i =
+	if eof s i 
+	then raise (Failure (s,i))
+	else 
+	Conf.to_char (token s i)
+      in 
+      if eof s i 
+      then raise (Failure (s,i))
+      else 
+      match token s i with
+	| RBRACKET  -> succ i, EmptySet
+	| CARRET    -> let i, cs = set0 CS.empty s (succ i) in 
+		       i, Not (Set cs)
+	| c         -> let i, cs = set1 CS.empty (Conf.to_char c) s (succ i)in
+		       i, Set cs
+
+    let parse (s : stream) : re =
+      let rec parse s i stack = 
+	match stack with
+	  | Postfix o::R x::xs    -> postfix (parse s i) o x xs
+	  | R x::Infix o::R y::xs -> infix (parse s i) o x y xs
+	  | RPar::R x::LPar::xs   -> shift s i (R x::xs)
+	  | RPar::R x::R y::xs    -> parse s i (RPar::R (concat y x)::xs)
+	  | _                     -> shift s i stack
+
+      and postfix f (o : postfix) (re : re) stack =
+	match o with
+	    Pqmark              -> f (R (repeat 1 re)::stack)
+	  | Pstar               -> f (R (kleene re)::stack)
+	  | Pplus               -> f (R (plus re)::stack)
+	  | Prange (b, None)    -> f (R (power b re)::stack)
+	  | Prange (b, Some e)  -> f (R (powerrep b e re)::stack)
+	  
+      and infix f o x y stack =
+	match o with
+	  | Ipipe -> f (R (or_op x y)::stack)
+
+      and shift s i stack =
+	let ni = succ i in
+	if eof s i 
+	then
+	  finish s i stack
+	else
+	match token s i with
+	    LPARENS    -> parse s ni (LPar::stack)
+	  | RPARENS    -> parse s ni (RPar::stack)
+	  | QMARK      -> parse s ni (Postfix Pqmark::stack)
+	  | STAR       -> parse s ni (Postfix Pstar::stack)
+	  | PLUS       -> parse s ni (Postfix Pplus::stack)
+	  | PIPE       -> parse s ni (Infix Ipipe::stack)
+	  | LBRACE     -> let ni, r = parse_range s i in
+			  parse s ni (Postfix r::stack)
+	  | LBRACKET   -> let ni, r = parse_set s ni in 
+			  parse s ni (R r::stack)
+	  | BACKSLASH  -> let ni, r = parse_backslash s ni in
+			  parse s ni (R r::stack)
+	  | DOT        -> parse s ni (R Any::stack)
+	  (*
+	    | DOLLAR     ->
+	    | CARRET     -> 
+	  *)
+	  | c          -> parse s ni (R (Set (single (Conf.to_char c)))::stack)
+
+      and finish s i = function
+	  | Postfix o::R x::xs    -> postfix (finish s i) o x xs
+	  | R x::Infix o::R y::xs -> infix (finish s i) o x y xs
+	  | RPar::R x::LPar::xs   -> finish s i (R x::xs)
+	  | RPar::R x::R y::xs    -> finish s i (RPar::R (concat y x)::xs)
+	  | R x::R y::xs          -> finish s i (R (concat y x)::xs)
+	  | [R x]                 -> x
+	  | stack                 ->  dump stack; raise (Failure (s,i))
+
+	  	    
+
+      in parse s 0 []
+	    
   end
 
 end

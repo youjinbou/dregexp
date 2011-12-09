@@ -142,7 +142,10 @@ struct
   let alpha = SOr(SRange ('a','z'),SRange ('A', 'Z'))
   let num   = SRange('0','9')
 
-  (* simple web url : http://[A-Za-z0-9-_]+(.[A-Za-z0-9-_]+)+(/[A-Za-z0-9-_.]+)*(/?) *)
+  (* simple web url : 
+     w = [A-Za-z0-9-_]+
+     http://\w(.\w)*(/[A-Za-z0-9-_.]+)*(/?)([?](\w=\w)* )? 
+    *)
   let url = 
     convert (
       let letter = 
@@ -171,26 +174,36 @@ struct
 	  SKleene (SConcat (SAtom "/", folder)),
 	  SRepeat(SAtom "/",0,1)
 	)
+      and params =
+	let param = 
+	  SConcat (
+	    word,
+	    SConcat (SAtom "=", word)
+	  ) in
+	SConcat (SAtom "?", SKleene (param))
+
       in
-      SConcat(address,page)
+      SConcat(SConcat(address,page),SRepeat(params,0,1))
     )
 
   (* 
      simplified form of email address :
-     email = <name>([.+-_]<name>)*@<domain>
+     email = <name>([-.+_]<name>)*@<domain>
   *)
   let email = 
     convert (
       let alphanum = SOr(alpha, num) in
-      let dletter = SOr(alphanum, SSet ['-';'_' ]) in
+      let dletter = SOr(SSet ['-';'_' ], alphanum) in
       let name = SConcat(alpha,SKleene(alphanum))
-      and punct = SSet [ '.' ; '+'; '-' ; '_' ]
+      and punct = SSet [ '-' ; '.' ; '+'; '_' ]
       and arob  = SSet [ '@' ] 
       and dword = SConcat (dletter, SKleene(dletter)) in
-      let domain = SConcat ( SKleene (SConcat (dword, SSet ['.'])),
-			     SConcat ( SConcat (dword, SSet ['.']),
-				       dword
-			     ))
+      let domain = 
+	SConcat ( SKleene (SConcat (dword, SSet ['.'])),
+		  SConcat ( SConcat (dword, SSet ['.']),
+			    dword
+		  )
+	)
       in
       SConcat (
 	SConcat (
@@ -214,6 +227,18 @@ struct
     in
     convert (SConcat (a,SConcat (b, SConcat (c, d))))
 
+  let abcdOrbcde =
+    let abcd = SAtom "abcd"
+    and bcde = SAtom "bcde"
+    in
+    convert (SOr (abcd,bcde))
+
+  let a_b =
+    let a = SSet [ 'a' ]
+    and b = SSet [ 'b' ]
+    in
+    convert (SConcat (a, SConcat (SAny, b)))
+
   let _ =
     let assert_list f l =
       List.iter (fun x -> assert (f x)) l
@@ -222,25 +247,148 @@ struct
       assert_list (RE.string_match r) gl;
       assert_list (fun x -> not (RE.string_match r x)) bl 
     in
-    let good_url   = [ "http://www.yahoo.fr" ; "http://www.yahoo.fr/" ; "http://www.yahoo.fr/mail/admin" ; "http://www.yahoo.fr/mail/admin/" ]
+    let good_url   = [ "http://www.yahoo.fr" ; "http://www.yahoo.fr/" ; "http://www.yahoo.fr/mail/admin" ; "http://www.yahoo.fr/mail/admin/"; "http://www.yahoo.fr/mail?foo=bar" ]
     and bad_url    = [ "http://www.yahoo.fr/mail?foo" ]
-    and good_email = [ "youjinbou+foobar@github.com" ] (* slow *)
-    and bad_email  = [] 
+    and good_email = [ "youjinbou.foobar@github.com" ]
+    and bad_email  = [ "gggqsdfq@@stuff.com" ; "{" ] 
     and good_ab5a  = [ "aa"; "aba"; "abba"; "abbba"; "abbbba"; "abbbbba" ]
     and bad_ab5a   = [ "abbbbbba" ; "abbbabbbba" ]
     and good_ab3c2d = [ "ad" ; "abd"; "acd"; "abcd" ]
     and bad_ab3c2d  = [ "aa" ; "acbd" ; "abbbbcd" ; "abcccd" ]
+    and good_abcdOrbcde = [ "abcd" ; "bcde" ]
+    and bad_abcdOrbcde = [ "abce" ; "abde" ; "acde" ]
+    and good_a_b = [ "aab" ; "abb" ; "acb" ; "a.b" ]
+    and bad_a_b = [ "bab" ; "abd" ; "a_bc" ]
     in
     check url good_url bad_url;
     check email good_email bad_email;
     check ab5a good_ab5a bad_ab5a;
-    check ab3c2d good_ab3c2d bad_ab3c2d
+    check ab3c2d good_ab3c2d bad_ab3c2d;
+    check abcdOrbcde good_abcdOrbcde bad_abcdOrbcde;
+    check a_b good_a_b bad_a_b
 
   let _ =
     let acOrbc = convert (SOr (SAtom "ab",SAtom "ac")) in
     RE.DFA.dump (RE.DFA.make acOrbc);
+    RE.DFA.dump (RE.DFA.make abcdOrbcde);
     RE.DFA.dump (RE.DFA.make url);
     RE.DFA.dump (RE.DFA.make email)
 
+
+  module ParserTest =
+  struct
+
+    module Conf =
+    struct
+      
+      type stream = string
+
+      exception EOF
+
+      type token =  
+	  LPARENS
+	| RPARENS
+	| QMARK
+	| STAR
+	| PLUS
+	| MINUS
+	| PIPE
+	| LBRACE
+	| RBRACE
+	| LBRACKET
+	| RBRACKET
+	| BACKSLASH
+	| DOT
+	| COMMA
+	| DOLLAR
+	| CARRET
+	| ALPHA of char
+	| NUM of char
+	| OTHER of char
+
+      let token s i =
+	if i < String.length s 
+	then 
+	  match s.[i] with 
+	    | '('  -> LPARENS
+	    | ')'  -> RPARENS
+	    | '?'  -> QMARK
+	    | '*'  -> STAR
+	    | '+'  -> PLUS
+	    | '-'  -> MINUS
+	    | '|'  -> PIPE
+	    | '{'  -> LBRACE
+	    | '}'  -> RBRACE
+	    | '['  -> LBRACKET
+	    | ']'  -> RBRACKET
+	    | '\\' -> BACKSLASH
+	    | '.'  -> DOT
+	    | ','  -> COMMA
+	    | '$'  -> DOLLAR
+	    | '^'  -> CARRET
+	    | c when c >= '0' && c <= '9' -> NUM c
+	    | c when (c >= 'A' && c <= 'Z')
+	    || (c >= 'a' && c <= 'z') -> ALPHA c
+	    | c    -> OTHER c
+	else
+	  raise EOF
+	    
+      let eof s i =
+	i >= String.length s
+
+      let to_char = function
+	| LPARENS      -> '('
+	| RPARENS      -> ')'
+	| QMARK        -> '?'
+	| STAR         -> '*'
+	| PLUS         -> '+'
+	| MINUS        -> '-'
+	| PIPE         -> '|'
+	| LBRACE       -> '{'
+	| RBRACE       -> '}'
+	| LBRACKET     -> '['
+	| RBRACKET     -> ']'
+	| BACKSLASH    -> '\\'
+	| DOT          -> '.'
+	| COMMA        -> ','
+	| DOLLAR       -> '$'
+	| CARRET       -> '^'
+	| ALPHA c
+	| NUM c
+	| OTHER c      ->  c
+
+    end
+
+    module Parser = RE.Parser(Conf)
+
+    open Parser
+
+    let url_s = "http://[-A-Za-z0-9_]+(\\.[-A-Za-z0-9_]+)*(/[-A-Za-z0-9._]+)*(/?)([?]([-A-Za-z0-9_]+=[-A-Za-z0-9_]+)*)?"
+
+    let email_s = 
+      let alpha    = "[A-Za-z]"
+      and alphanum = "[A-Za-z0-9]"
+      and dletter  = "[-_A-Za-z0-9]" in
+      let name  = alpha^alphanum^"*"
+      and dword = dletter^"+" in
+      let domain = "("^dword^"\\.)*"^dword^"\\."^dword
+      in
+      name^"([-.+_]"^name^")*@"^domain
+
+    let _ =
+(*
+      assert (0 = RE.compare url (parse url_s));
+      assert (0 = RE.compare email (parse email_s));
+*)
+      RE.pprint url; print_newline ();
+      RE.pprint (parse url_s);
+      print_newline ();print_newline ();
+      RE.pprint email; print_newline ();
+      RE.pprint (parse email_s)
+      
+  end
+
+
 end
-  
+
+
