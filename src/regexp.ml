@@ -1,9 +1,32 @@
+(**************************************************************************)
+(*                                                                        *)
+(*      A regular expression handling library                             *)
+(*                                                                        *)
+(*      Copyright (C) 2011  Didier Cassirame                              *)
+(*                                                                        *)
+(*      This library is free software;  you can  redistribute it and/or   *)
+(*      modify  it  under the terms  of the  GNU  Lesser General Public   *)
+(*      License  as published by  the Free Software Foundation;  either   *)
+(*      version 3 of the License, or (at your option) any later version.  *)
+(*                                                                        *)
+(*      This library is distributed in the hope that it will be useful,   *)
+(*      but WITHOUT ANY WARRANTY;  without even the implied warranty of   *)
+(*      MERCHANTABILITY  or  FITNESS FOR A PARTICULAR PURPOSE.  See the   *)
+(*      GNU Lesser General Public License for more details.               *)
+(*                                                                        *)
+(*      You should have received a copy of the GNU Lesser General Public  *)
+(*      License  along  with this library;  if not,  write to  the Free   *)
+(*      Software Foundation, Inc.,                                        *)
+(*      51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA      *)
+(*                                                                        *)
+(**************************************************************************)
+
 (*
 
-  implementation of a Regular Expression DFA constructor from 
+  Implementation of a Regular Expression DFA constructor from 
   RE derivatives.
 
-  Papers :
+  Papers on which this code is based:
 
   [1] Derivatives of regular expressions (Brzozowski)
 
@@ -29,7 +52,7 @@ sig
 
   val compare : t -> t -> int
 
-  val print   : t -> unit
+  val to_string : t -> string
 
 end
 
@@ -66,6 +89,11 @@ struct
 
   module CS = Rangeset.Make(C)
 
+  let sprint s =
+    for i = 0 to pred (S.length s) do
+      print_string (C.to_string (S.get s i));
+    done
+
   (** sub-regexp annotation *)
   type annot = int option
 
@@ -81,6 +109,9 @@ struct
     | Or       of t pair        (* r | s              *)
     | And      of t pair        (* r & s              *)
     | Not      of t             (* ...                *)
+
+  (** type alias for submodules *)
+  type re = t 
 
   (** comparison function using the CS comparison operator when needed *)
   let rec compare a b = 
@@ -232,17 +263,46 @@ struct
       | Or  (a,b)             -> or_op (derive c a) (derive c b)
       | Not a                 -> not_op (derive c a)
 
+  type match_kind = SHORTEST | LONGEST | FIRST
+
+  type match_solution = re * int (* re derivative & string length *)
 
   (** check whether s is parsed by re *)
-  let string_match re s : bool = 
-    let rec match_re re s i m =
-      if i >= m then nullable re (* we're in an accepting state if the current re accepts Epsilon *)
+  let string_match kind re s : match_solution option = 
+    let result der len m =
+      if len <= m && len >= 0
+      then Some (der,len) 
+      else None
+    in
+    let rec shortest_match_re re s i m (der,len) =
+      let der, len = if nullable re && i < len then re, i else der, len in
+      if i >= m 
+      then result der len m
       else
 	match derive (S.get s i) re with
-	    EmptySet    -> false
-	  | d           -> match_re d s (succ i) m
+	    EmptySet    -> result der len m
+	  | d           -> shortest_match_re d s (succ i) m (der,len)
+    and first_match_re re s i m =
+      if nullable re 
+      then Some (re, i)
+      else
+	match derive (S.get s i) re with
+	    EmptySet    -> None
+	  | d           -> first_match_re d s (succ i) m
+    and longest_match_re re s i m (der,len) =
+      let der, len = if nullable re && i > len then re, i else der, len in
+      if i >= m 
+      then result der len m
+      else
+	match derive (S.get s i) re with
+	    EmptySet    -> result der len m
+	  | d           -> longest_match_re d s (succ i) m (der,len)
     in
-    match_re re s 0 (S.length s)
+    let l = S.length s in
+    match kind with
+	SHORTEST -> shortest_match_re re s 0 l (re, succ l)
+      | LONGEST  -> longest_match_re re s 0 l (re, -1)
+      | FIRST    -> first_match_re re s 0 l 
 
   (** Derivative CharSet Classes construction module *)
   (*
@@ -252,8 +312,6 @@ struct
   *)
   module Class =
   struct
-
-    type re = t
 
     let pprint_re = pprint
 
@@ -282,6 +340,12 @@ struct
 
     type t = expr
 
+
+    let contains (cs : t) (c : C.t) =
+      match cs with
+	  CSet    cs -> CS.contains cs c
+	| CInvSet cs -> not (CS.contains cs c)
+
     let compare a b = 
       match a, b with
 	  CSet x, CSet y
@@ -290,10 +354,12 @@ struct
 
     let sort (l : t list) : t list  = List.sort compare l
 
-    let pprint = function
-      | CSet s      -> print_string "["; CS.pprint s; print_string "]"
-      | CInvSet s   -> print_string "[^"; CS.pprint s; print_string "]"
+    let to_string = function
+      | CSet s      -> "["^CS.to_string s^"]"
+      | CInvSet s   -> "^["^CS.to_string s^"]"
        
+    let pprint x = print_string (to_string x)
+
     let empty = CSet CS.empty
 
     (* merge class lists, no combination *)
@@ -349,7 +415,6 @@ struct
   module DFA = 
   struct
 
-    type re = t
     let pprint_re = pprint
 
 
@@ -367,6 +432,7 @@ struct
     (* Deterministic Finite Automaton type *)
     type t = {
       classes       : Class.t array;     (* character class array for each state *)
+      accept        : bool array;        (* accepting states *)
       transitions   : int array array;   (* transition from (state, char set) to state *)
     }
 
@@ -374,10 +440,15 @@ struct
     module Builder =
     struct
 
-      exception Error of String.t
+      exception Failure of String.t
+
+      type state = int
+      type cs    = int
 
       (* RegExp Derivatives Mapping *)
       module QSet = Map.Make(struct type t = re let compare = compare end)
+
+      module StateSet = Set.Make(struct type t = cs let compare = Pervasives.compare end)
 
       module ClassSet = Map.Make(struct type t = Class.t let compare = Class.compare end)
 
@@ -385,12 +456,12 @@ struct
 
       type 'a abuffer = 'a AB.t
 
-      type state = int
-      type cs    = int
+      type dfa = t
 	  
       type t = {
 	mutable b_ccount  : int;                           (* class count *)
 	mutable b_states  : state QSet.t;                  (* derivative mapping to states *)
+	mutable b_accept  : StateSet.t;                    (* set of accepting states *)
 	mutable b_classes : cs ClassSet.t;                 (* derivative classes set *)
 	b_transitions     : (cs * state) abuffer abuffer;  (* transitions *)
       }
@@ -405,6 +476,7 @@ struct
       let add_state (b : t) (qc : re) : state = 
 	let count = AB.add b.b_transitions (AB.create 0 (-1,-1)) in
 	b.b_states <- QSet.add qc count b.b_states;
+	if nullable qc then b.b_accept <- StateSet.add count b.b_accept;
 	count
 
       let find_state (b : t) (qc : re) : state = QSet.find qc b.b_states
@@ -455,7 +527,7 @@ struct
       let register_transition (b : t) (source : state) (cs : cs) (target : state) : unit =
 	try 
 	  if (find_transition b source cs = target)
-	  then raise (Error "invalid transition : trying to create a transition from state and character class leading to a different state");
+	  then raise (Failure "invalid transition : trying to create a transition from state and character class leading to a different state");
 	with Not_found -> ignore (add_transition b source cs target)
 
       let pprint_transitions b = 
@@ -492,16 +564,17 @@ struct
 	let b = {
 	  b_ccount       = 0;               
 	  b_states       = (* QSet.add re 0 *) QSet.empty;
+	  b_accept       = StateSet.empty;
 	  b_classes      = ClassSet.empty;  
 	  b_transitions  = AB.create 5 (AB.create 5 (-1,-1));
 	} in
 	ignore (register_state b re);
 	let res = explore re b in
-	pprint b;
+(*	pprint b; *)
 	res
 
       (* construct the DFA *)
-      let build (b : t) = 
+      let build (b : t) : dfa = 
 	let c_count = class_count b in
 	let fillup_state v ab =
 	  for i = 0 to pred (AB.length ab) do
@@ -516,8 +589,11 @@ struct
 	in
 	let c = Array.make c_count Class.empty in 
 	ClassSet.iter (fun cs i -> c.(i) <- cs) b.b_classes;
+	let accept = Array.make (state_count b) false in
+	StateSet.iter (fun cs -> accept.(cs) <- true) b.b_accept;
 	{
 	  classes     = c;
+	  accept      = accept;
 	  transitions = Array.init (state_count b) (make_state_transition b);
 	}
 	  
@@ -528,8 +604,78 @@ struct
 
     let dump dfa =
       Array.iteri (fun k v -> print_int k; print_string ": "; Class.pprint v; print_newline ()) dfa.classes;
-      Array.iteri (fun i a -> Printf.printf "%02d : " i; Array.iter (fun v -> Printf.printf "% 2d " v) a; print_newline ()) dfa.transitions
-      
+      Array.iteri (fun k v -> print_int k; print_string ": "; print_string (string_of_bool v); print_newline ()) dfa.accept;
+      Array.iteri (fun i a -> Printf.printf "%02d : " i; Array.iter (fun v -> Printf.printf "%02d " v) a; print_newline ()) dfa.transitions
+
+    let string_match kind dfa s =
+      let ccount = Array.length dfa.classes in
+      let rec find_class dfa c i len =
+	if i >= len
+	then -1
+	else
+	  if Class.contains dfa.classes.(i) c 
+	  then i
+	  else find_class dfa c (succ i) len
+      in
+      let result state i = 
+	if dfa.accept.(state) 
+	then Some i
+	else None
+      in
+      let rec first_match_re dfa s state i m ccount =
+	if i >= m
+	then result state i
+	else 
+	  let rec loop_classes dfa s i c = 
+	    match find_class dfa (S.get s i) c ccount with
+		-1 -> result state i
+	      | nc ->
+		match dfa.transitions.(state).(nc) with
+		  | -1     -> loop_classes dfa s i (succ nc)
+		  | nstate ->
+		    if dfa.accept.(nstate)
+		    then
+		      result nstate (succ i)
+		    else
+		      match first_match_re dfa s nstate (succ i) m ccount with
+			| None   -> loop_classes dfa s i (succ nc)
+			| r      -> r
+	  in loop_classes dfa s i 0
+
+      and match_re fcomp dfa s state i m ccount =
+	if i >= m
+	then result state i
+	else
+	  let rec loop_classes dfa s i c =
+	    match find_class dfa (S.get s i) c ccount with
+		-1 -> result state i
+	      | nc -> 
+		match dfa.transitions.(state).(nc) with
+		  | -1     ->	      
+		    loop_classes dfa s i (succ c)
+		  | nstate ->
+		    let r = 
+		      match 
+			loop_classes dfa s i (succ nc),
+			match_re fcomp dfa s nstate (succ i) m ccount
+		      with
+			| Some k, Some k' -> Some (fcomp k k')
+			| Some k, None       
+			| None  , Some k  -> Some k
+			| _               -> None
+		    in
+		    match dfa.accept.(nstate), r with
+		      | true,  Some k -> result nstate (fcomp (succ i) k)
+		      | true,  None   -> result nstate (succ i)
+		      | false, _      -> r
+	  in loop_classes dfa s i 0
+      in
+      let len = (S.length s) in
+      match kind with
+	  SHORTEST    -> match_re min dfa s 0 0 len ccount
+	| LONGEST     -> match_re max dfa s 0 0 len ccount
+	| FIRST       -> first_match_re dfa s 0 0 len ccount
+
   end  (* DFA *)
 
 
@@ -586,8 +732,6 @@ struct
 
     end
     
-    type re = t (* renaming *)
-
     type s_re = 
       | SAny
       | SAtom    of S.t
@@ -700,8 +844,6 @@ struct
     open Conf
 
     exception Failure of stream * int
-
-    type re = t
 
     type infix = Ipipe
 
@@ -891,8 +1033,6 @@ struct
 	  | R x::R y::xs          -> finish s i (R (concat y x)::xs)
 	  | [R x]                 -> x
 	  | stack                 ->  dump stack; raise (Failure (s,i))
-
-	  	    
 
       in parse s 0 []
 	    

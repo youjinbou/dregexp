@@ -1,6 +1,30 @@
+(**************************************************************************)
+(*                                                                        *)
+(*      A regular expression handling library                             *)
+(*                                                                        *)
+(*      Copyright (C) 2011  Didier Cassirame                              *)
+(*                                                                        *)
+(*      This library is free software;  you can  redistribute it and/or   *)
+(*      modify  it  under the terms  of the  GNU  Lesser General Public   *)
+(*      License  as published by  the Free Software Foundation;  either   *)
+(*      version 3 of the License, or (at your option) any later version.  *)
+(*                                                                        *)
+(*      This library is distributed in the hope that it will be useful,   *)
+(*      but WITHOUT ANY WARRANTY;  without even the implied warranty of   *)
+(*      MERCHANTABILITY  or  FITNESS FOR A PARTICULAR PURPOSE.  See the   *)
+(*      GNU Lesser General Public License for more details.               *)
+(*                                                                        *)
+(*      You should have received a copy of the GNU Lesser General Public  *)
+(*      License  along  with this library;  if not,  write to  the Free   *)
+(*      Software Foundation, Inc.,                                        *)
+(*      51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA      *)
+(*                                                                        *)
+(**************************************************************************)
+
 (* Sets with successor and predecessor operators
    elements can be enumerated using these operators
    thus we can use ellipses to handle ranges of elements
+   fix-me: check cases when a char doesn't have a succ or a pred 
 *)
 
 module type ELT = 
@@ -13,7 +37,7 @@ sig
 
   val compare : t -> t -> int
     
-  val print   : t -> unit
+  val to_string : t -> string
 
 end
 
@@ -38,6 +62,9 @@ sig
   val iter : (e -> unit) -> t -> unit
 
   val first : t -> e
+  val last  : t -> e
+
+  val to_string : t -> string
 
   val pprint  : t -> unit
 
@@ -57,18 +84,26 @@ struct
 	x when x < 0  -> (a,b)
       | _             -> (b,a)
 
-
-  let print_range (a,b) = 
+  let range_to_string (a,b) = 
     if a = b 
-    then E.print a
-    else (E.print a;print_string "-";E.print b)
+    then E.to_string a
+    else (E.to_string a)^"-"^(E.to_string b)
 
-  let rec pprint = function
-    |  []   -> ()
-    | x::xs -> (
-      print_range x;
-      pprint xs
-    )
+  let to_string r = 
+    let b = Buffer.create 20 in
+    let rec tos = function
+      | []    -> Buffer.contents b
+      | x::xs -> Buffer.add_string b (range_to_string x); tos xs
+    in tos r
+
+  let rec pprint = 
+    let print_range r = print_string (range_to_string r)
+    in function
+      |  []   -> ()
+      | x::xs -> (
+	print_range x;
+	pprint xs
+      )
 
   (* comparison operators for elements *)
   let ( < ) a b  = E.compare a b < 0
@@ -89,7 +124,7 @@ struct
   let contains l e =
     let rec contains e = function
       | []        -> false
-      | (a,b)::xs -> not (e < a) && (e <= b || contains e xs)
+      | (a,b)::xs -> ((e >= a) && (e <= b)) || (contains e xs)
     in
     contains e l
 
@@ -130,9 +165,9 @@ struct
 	  then intersect l1 ys r
 	  else if a1 <= b1 && a2 <= b2  (* a1...b1...a2...b2 => b1...a2 *)
 	  then intersect xs l2 ((b1,a2)::r)
-	  else if b1 <= a1 && a2 <= b2  (* b1...a1...b2...a2 => a1...b2 *)
+	  else if b1 <= a1 && b2 <= a2  (* b1...a1...b2...a2 => a1...b2 *)
 	  then intersect l1 ys ((a1,b2)::r)
-	  else if a1 <= b1 && a2 >= b2  (* a1...b1...b2...a2 => b1...b2 *)
+	  else if a1 <= b1 && b2 <= a2  (* a1...b1...b2...a2 => b1...b2 *)
 	  then intersect l1 ys ((b1,b2)::r)
           else                          (* b1...a1...a2...b2 => a1...a2 *)
 	    intersect xs l2 ((a1,a2)::r)
@@ -145,12 +180,6 @@ struct
 	|  lr, []
 	| [], lr                   -> List.append (List.rev r) lr
 	| (a1,a2)::xs, (b1,b2)::ys -> (
-(*
-	  print_range (a1,a2);
-	  print_string " - ";
-	  print_range (b1,b2);
-	  print_newline ();
-*)
 	  if a2 < b1                    (* a1...a2...b1...b2 => a1..a2, keep b1..b2  *)
 	  then
 	    if E.succ a2 = b1           (* a1...a2b1...b2 => a1..b2 *)
@@ -163,9 +192,9 @@ struct
 	    else merge l1 ys ((b1,b2)::r)
 	  else if a1 <= b1 && a2 <= b2  (* a1...b1...a2...b2 => a1...b2 *)
 	  then merge ((a1,b2)::xs) ys r
-	  else if b1 <= a1 && a2 <= b2  (* b1...a1...b2...a2 => b1...a2 *)
+	  else if b1 <= a1 && b2 <= a2  (* b1...a1...b2...a2 => b1...a2 *)
 	  then merge ((b1,a2)::xs) ys r
-	  else if a1 <= b1 && a2 >= b2  (* a1...b1...b2...a2 => a1...a2 *)
+	  else if a1 <= b1 && b2 <= a2  (* a1...b1...b2...a2 => a1...a2 *)
 	  then merge ((a1,a2)::xs) ys r
 	  else                          (* b1...a1...a2...b2 => b1...b2 *)
 	    merge ((b1,b2)::xs) ys r
@@ -174,19 +203,6 @@ struct
 
 
   let substract (l1 : t) (l2 : t) : t =
-(*
-    print_string "substracting: ";
-    pprint l1;
-    print_string " - ";
-    pprint l2;
-    print_newline ();
-    let print_ranges a b c d =
-      E.print a;print_string "...";
-      E.print b;print_string "...";
-      E.print c;print_string "...";
-      E.print d;print_newline ()
-    in
-*)
     let rec substract l1 l2 r = 
       match l1, l2 with
 	| [], _                    -> List.rev r

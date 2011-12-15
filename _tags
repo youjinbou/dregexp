@@ -1,0 +1,3 @@
+<src>: include
+<tests/test_suite.{byte,native,d.byte,p.native}>: use_unix, use_oUnit
+<tests/test_suite.ml>: use_oUnit
