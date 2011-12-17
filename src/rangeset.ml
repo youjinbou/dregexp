@@ -23,8 +23,8 @@
 
 (* Sets with successor and predecessor operators
    elements can be enumerated using these operators
+   and there are a first and a last element.
    thus we can use ellipses to handle ranges of elements
-   fix-me: check cases when a char doesn't have a succ or a pred 
 *)
 
 module type ELT = 
@@ -34,6 +34,9 @@ sig
 
   val succ    : t -> t
   val pred    : t -> t
+
+  val first  : t
+  val last   : t
 
   val compare : t -> t -> int
     
@@ -111,6 +114,9 @@ struct
   let ( > ) a b  = E.compare a b > 0
   let ( <= ) a b = E.compare a b <= 0
   let ( >= ) a b = E.compare a b >= 0
+
+  let is_first x = x = E.first
+  let is_last x  = x = E.last
 
   (* signature symbols *----------------------------------------*)
 
@@ -203,6 +209,11 @@ struct
 
 
   let substract (l1 : t) (l2 : t) : t =
+    let erase_down x y =
+      is_first x || E.pred x < y 
+    and erase_up x y = 
+      is_last x || E.succ x > y
+    in
     let rec substract l1 l2 r = 
       match l1, l2 with
 	| [], _                    -> List.rev r
@@ -216,33 +227,25 @@ struct
 	    substract l1 ys r
 	  else if a1 <= b1 && a2 <= b2  (* a1...b1...a2...b2 => [a1...b1[ *)
 	  then
-	    let x = E.pred b1 in
-	    if x < a1
+	    if erase_down b1 a1
 	    then substract xs l2 r
-	    else substract xs l2 ((a1,x)::r)
+	    else substract xs l2 ((a1,E.pred b1)::r)
 	  else if b1 <= a1 && b2 <= a2  (* b1...a1...b2...a2 => ]b2...a2] *)
 	  then
-	    let x = E.succ b2 in
-	    if x > a2
+	    if erase_up b2 a2 
 	    then substract xs ys r
-	    else substract ((x, a2)::xs) ys r
+	    else substract ((E.succ b2, a2)::xs) ys r
 	  else if a1 <= b1 && b2 <= a2  (* a1...b1...b2...a2 => [a1..b1[ + ]b2..a2] *)
 	  then
-	    let x = E.pred b1 and y = E.succ b2 in
-	    if x < a1
-	    then 
-	      if y > a2
-	      then substract xs ys r
-	      else substract xs ys ((y,a2)::r)
-	    else
-	      if y > a2
-	      then substract xs ys ((a1,x)::r)
-	      else substract xs ys ((y,a2)::(a1,x)::r)
+	    match erase_down b1 a1, erase_up b2 a2 with
+		true,  true -> substract xs ys r
+	      | true,  _    -> substract xs ys ((E.succ b2,a2)::r)
+	      | _   ,  true -> substract xs ys ((a1,E.pred b1)::r)
+	      | _           -> substract xs ys ((E.succ b2,a2)::(a1,E.pred b1)::r)
 	  else
-	    substract xs l2 r        (* b1...a1...a2...b2 => [] *)
+	    substract xs l2 r           (* b1...a1...a2...b2 => [] *)
 	) in
     substract l1 l2 []
-
 
   let iter (f : e -> unit) (s : t) =
     let rec range_iter f a b =
@@ -253,6 +256,5 @@ struct
       | []        -> ()
       | (a,b)::xs -> range_iter f a b; iter f xs
     in iter f s
-
 
 end

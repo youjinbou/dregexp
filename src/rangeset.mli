@@ -29,6 +29,9 @@ sig
   val succ : t -> t
   val pred : t -> t
 
+  val first  : t
+  val last   : t
+
   val compare : t -> t -> int
 
   val to_string : t -> string

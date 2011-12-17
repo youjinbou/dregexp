@@ -41,38 +41,46 @@ struct
     type t = char
     let succ x = chr (succ (code x))
     let pred x = chr (pred (code x))
+
+    let first = chr 0
+    let last  = chr 255
+
     let compare = Pervasives.compare 
 
-    let to_string = PChar.escaped
-
-    let print c = print_int (code c)
+    let to_string x = Printf.sprintf "%c{%d}" x (PChar.code x)
 
   end
 
   module CR = Make(Char)
 
   let random_char () =
-    chr ((Random.int 253) + 1)
+    chr ((Random.int 255))
 
-  let check_singleton cs c inverse = 
+  let rec other_random_char c1 =
+    let c2 = random_char () in
+    if c1 = c2 
+    then other_random_char c1 
+    else c2
+
+  let check_singleton cs c contains = 
     let msg b = 
-      Printf.sprintf "character %d %sin rangeset %s" (code c) b (CR.to_string cs)
+      Printf.sprintf "character %d (%s) %sin rangeset [%s]" (code c) (PChar.escaped c) b (CR.to_string cs)
     in
-    if inverse 
+    if contains 
     then
-      assert_bool (msg "")  (not (CR.contains cs c))
+      assert_bool (msg "not ")  (CR.contains cs c)
     else
-      assert_bool (msg "not ") (CR.contains cs c)
+      assert_bool (msg "") (not (CR.contains cs c))
 	
   let check_range cs b e inverse =
     if inverse 
     then
       for i = (code b) to (code e) do
-	assert_bool (Printf.sprintf "character %d in rangeset" i) (not (CR.contains cs (chr i)))
+	assert_bool (Printf.sprintf "character %d (%s) in rangeset [%s]" i (PChar.escaped (PChar.chr i)) (CR.to_string cs)) (not (CR.contains cs (chr i)))
       done
     else
       for i = (code b) to (code e) do
-	assert_bool (Printf.sprintf "character %d not in rangeset" i) (CR.contains cs (chr i))
+	assert_bool (Printf.sprintf "character %d (%s) not in rangeset [%s]" i (PChar.escaped (PChar.chr i)) (CR.to_string cs)) (CR.contains cs (chr i))
       done
 
   let print name x = 
@@ -80,76 +88,162 @@ struct
     CR.pprint x;
     print_newline ()
 
-  let check_intersect cs b1 e1 b2 e2 =
-    for i = 1 to 254 do
-      check_singleton cs (chr i) 
-	 (not ((i >= code b1) && (i <= code e1) &&
-	   (i >= code b2) && (i <= code e2)))
+  let check_f cs f =
+    for i = 0 to 255 do
+      check_singleton cs (chr i) (f i)
     done
+
+  let check_intersect cs b1 e1 b2 e2 =
+    check_f cs (fun i ->
+      ((i >= code b1) && (i <= code e1) &&
+	  (i >= code b2) && (i <= code e2))
+    )
 
   let check_merge cs b1 e1 b2 e2 =
-    for i = 1 to 254 do
-      check_singleton cs (chr i) 
-	((i < (code b1) || (i > code e1)) 
-	 && ((i < code b2) || (i > code e2)))
-    done
+    check_f cs (fun i ->
+      (((i >= code b1) && (i <= code e1)) 
+       || ((i >= code b2) && (i <= code e2)))
+    )
 
   let check_substract cs b1 e1 b2 e2 =
-    for i = 1 to 254 do
-      check_singleton cs (chr i)
-	((i < code b1) || (i > code e1)
-	 || ((i >= code b2) && (i <= code e2)))
-    done
+    check_f cs (fun i ->    
+      (((i >= code b1) && (i <= code e1))
+       && ((i < code b2) || (i > code e2)))
+    )
 
-  let test_f f comb =
-    let b1 = random_char ()
-    and b2 = random_char ()
-    and e1 = random_char ()
-    and e2 = random_char () in
-    let b1,e1 = if b1 <= e1 then b1, e1 else e1,b1
-    and b2,e2 = if b2 <= e2 then b2, e2 else e2,b2 in
+  let dump_test comb cs1 cs2 =
+    print_string "cs1 : "; CR.pprint cs1; print_newline ();
+    print_string "cs2 : "; CR.pprint cs2; print_newline ();
+    print_string "res : "; CR.pprint (comb cs1 cs2); print_newline ()
+
+  let test_f f comb cs1 cs2 b1 e1 b2 e2 =
+    try 
+      f (comb cs1 cs2) b1 e1 b2 e2
+    with e -> (
+      dump_test comb cs1 cs2;
+      raise e
+    )
+
+  let minmax a b = 
+    if a < b then a,b else b,a
+
+  let randminmax () =
+    let x = random_char () in
+    let y = other_random_char x in
+    minmax x y
+
+  let test_random_f f comb =
+    let b1,e1 = randminmax ()
+    and b2,e2 = randminmax () in
     let cs1 = CR.range b1 e1
     and cs2 = CR.range b2 e2 in
-    f (comb cs1 cs2) b1 e1 b2 e2
+    test_f f comb cs1 cs2 b1 e1 b2 e2
 
   let test_singleton_f f comb =
     let x  = random_char ()
-    and b1 = random_char ()
-    and e1 = random_char () in
-    let b1, e1 = if b1 <= e1 then b1, e1 else e1, b1 in
+    and b1,e1 = randminmax () in
     let cs1 = CR.range b1 e1
     and cs2 = CR.singleton x in
-    f (comb cs1 cs2) b1 e1 x x
+    test_f f comb cs1 cs2 b1 e1 x x
 
-  let test_intersect () =
-    test_singleton_f check_intersect CR.intersect;
-    test_f check_intersect CR.intersect
+  let test_same_f f comb =
+    let b1,e1 = randminmax () in
+    let cs1 = CR.range b1 e1 in
+    test_f f comb cs1 cs1 b1 e1 b1 e1
 
-  let test_merge () =
-    test_singleton_f check_merge CR.merge;
-    test_f check_merge CR.merge
-
-  let test_substract () =
-    test_singleton_f check_substract CR.substract;
-    test_f check_substract CR.substract
-
-  let test_empty () =
-    let b1 = random_char ()
-    and e1 = random_char () in
+  let test_overlap_f f comb =
+    let b1,e1 = randminmax () in
+    let b2 = b1
+    and e2 = Char.pred e1 in
     let cs1 = CR.range b1 e1 
-    and cse = CR.empty in
-    assert_bool "empty contains a value" (not (CR.contains cse b1));
-    assert_bool "intersect empty _ is not empty" (0 = CR.compare cse (CR.intersect cs1 cse));
-    assert_bool "substract _ empty is not _" (0 = CR.compare cs1 (CR.substract cs1 cse));
-    assert_bool "merge _ empty is not _" (0 = CR.compare cs1 (CR.merge cs1 cse))
+    and cs2 = CR.range b2 e2 in
+    test_f f comb cs1 cs2 b1 e1 b2 e2
+
+  let test_bounds1_f f comb =
+    let b1 = Char.first
+    and e1 = Char.last 
+    and b2, e2 = randminmax ()
+    in
+    let cs1 = CR.range b1 e1 
+    and cs2 = CR.range b2 e2 in
+    test_f f comb cs1 cs2 b1 e1 b2 e2
+
+  let test_bounds2_f f comb =
+    let b1 = Char.first
+    and e1 = random_char ()
+    and b2 = random_char ()
+    and e2 = Char.last 
+    in
+    let cs1 = CR.range b1 e1 
+    and cs2 = CR.range b2 e2 in
+    test_f f comb cs1 cs2 b1 e1 b2 e2
+
+  let test_bounds3_f f comb = 
+    let b1 = random_char ()
+    and e1 = Char.last 
+    and b2 = Char.first
+    and e2 = random_char ()
+    in
+    let cs1 = CR.range b1 e1 
+    and cs2 = CR.range b2 e2 in
+    test_f f comb cs1 cs2 b1 e1 b2 e2
+
+  let test_bounds4_f f comb = 
+    let b1,e1 = randminmax ()
+    and e2 = Char.last 
+    and b2 = Char.first
+    in
+    let cs1 = CR.range b1 e1 
+    and cs2 = CR.range b2 e2 in
+    test_f f comb cs1 cs2 b1 e1 b2 e2
+
+  let test_list_f f comb =
+    TestList [
+      TestLabel ("singleton", TestCase (fun () ->
+	test_singleton_f f comb
+      ));
+      TestLabel ("overlap", TestCase (fun () ->
+	test_overlap_f f comb
+      ));
+      TestLabel ("same", TestCase (fun () ->
+	test_same_f f comb
+      ));
+      TestLabel ("bounds", TestList [
+	TestLabel ("one", TestCase (fun () -> test_bounds1_f f comb));
+	TestLabel ("two", TestCase (fun () -> test_bounds2_f f comb));
+	TestLabel ("three", TestCase (fun () -> test_bounds3_f f comb));
+	TestLabel ("four", TestCase (fun () -> test_bounds4_f f comb));
+      ]);
+    ]
+
+  let test_intersect =
+    test_list_f check_intersect CR.intersect
+
+  let test_merge =
+    test_list_f check_merge CR.merge
+
+  let test_substract =
+    test_list_f check_substract CR.substract
+
+  let test_empty =
+    TestCase (fun () ->
+      let b1 = random_char ()
+      and e1 = random_char () in
+      let cs1 = CR.range b1 e1 
+      and cse = CR.empty in
+      assert_bool "empty contains a value" (not (CR.contains cse b1));
+      assert_bool "intersect empty _ is not empty" (0 = CR.compare cse (CR.intersect cs1 cse));
+      assert_bool "substract _ empty is not _" (0 = CR.compare cs1 (CR.substract cs1 cse));
+      assert_bool "merge _ empty is not _" (0 = CR.compare cs1 (CR.merge cs1 cse))
+    )
 
   let test_list = TestLabel (
     "[ Rangeset ]",
     TestList [
-      TestLabel ("empty", TestCase test_empty);
-      TestLabel ("intersect", TestCase test_intersect);
-      TestLabel ("merge", TestCase test_merge);
-      TestLabel ("substract", TestCase test_substract);
+      TestLabel ("empty", test_empty);
+      TestLabel ("intersect", test_intersect);
+      TestLabel ("merge", test_merge);
+      TestLabel ("substract", test_substract);
     ]
   )
 
@@ -157,12 +251,8 @@ end
 
 module Char : Regexp.CHAR with type t = char = 
 struct 
-  type t = char
-  let succ x = Char.chr (succ (Char.code x))
-  let pred x = Char.chr (pred (Char.code x))
-  let compare = Pervasives.compare 
 
-  let to_string = Char.escaped
+  include RangeSetTest.Char
 
   let any = 'a'
 
@@ -334,7 +424,7 @@ struct
     ]
 
   let assert_list f l =
-    List.iter (fun x -> assert_bool ("failed for "^x) (f x)) l
+    List.map (fun x -> TestCase (fun () -> assert_bool ("failed for "^x) (f x))) l
 
   let assert_raw r v =
     match RE.string_match RE.LONGEST r v with
@@ -347,25 +437,29 @@ struct
       | _                                -> false
 
   let check assertf r gl bl =
-    assert_list (fun x -> assertf r x) gl;
-    assert_list (fun x -> not (assertf r x)) bl 
+    TestList [
+      TestLabel ("good", TestList (assert_list (fun x -> assertf r x) gl));
+      TestLabel ("bad", TestList (assert_list (fun x -> not (assertf r x)) bl))
+    ]
 
-  let test_raw () = 
+  let test_raw = 
     let check_re x = check assert_raw x.re x.good x.bad in
-    List.iter check_re data
+    TestList 
+      (List.map (fun x -> TestLabel (x.name, check_re x)) data)
 
-  let test_dfa () =
+  let test_dfa =
   let check_dfa x = 
     let dfa = RE.DFA.make x.re in
     check assert_dfa dfa x.good x.bad
   in
-  List.iter check_dfa data
+    TestList 
+      (List.map (fun x -> TestLabel (x.name, check_dfa x)) data)
     
   let test_list = TestLabel ( 
     "[ match ]",
     TestList [
-      TestLabel ("raw",TestCase test_raw); 
-      TestLabel ("dfa",TestCase test_dfa);
+      TestLabel ("raw", test_raw); 
+      TestLabel ("dfa", test_dfa);
     ]
   )
 
@@ -498,4 +592,3 @@ let test_suite =
 
 let _ = 
   run_test_tt test_suite
-
