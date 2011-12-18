@@ -47,7 +47,7 @@ struct
 
     let compare = Pervasives.compare 
 
-    let to_string x = Printf.sprintf "%c{%d}" x (PChar.code x)
+    let to_string x = Printf.sprintf "%c<%d>" x (PChar.code x)
 
   end
 
@@ -275,6 +275,20 @@ struct
 
   open RE.SRegexp
 
+  let url_s = "http://[-A-Za-z0-9_]+(\\.[-A-Za-z0-9_]+)*(/[-A-Za-z0-9._]+)*(/?)([?]([-A-Za-z0-9_]+=[-A-Za-z0-9_]+)*)?"
+
+  let email_s = 
+    let alpha    = "[A-Za-z]"
+    and alphanum = "[A-Za-z0-9]"
+    and dletter  = "[-_A-Za-z0-9]" in
+    let name  = alpha^alphanum^"*"
+    and dword = dletter^"+" in
+    let domain = "("^dword^"\\.)*"^dword^"\\."^dword
+    in
+    name^"([-.+_]"^name^")*@"^domain
+
+  (* SRegexp stuff -------------- *)
+
   (* lowercase alphabet *)
   let az =
     convert (SKleene(SRange('a','z')))
@@ -391,12 +405,12 @@ struct
 
   let data =
     [ { 
-      name = "url";
+      name = url_s;
       re   = url;
       good = [ "http://www.yahoo.fr" ; "http://www.yahoo.fr/" ; "http://www.yahoo.fr/mail/admin" ; "http://www.yahoo.fr/mail/admin/"; "http://www.yahoo.fr/mail?foo=bar" ];
       bad = [ "http://www.yahoo.fr/mail?foo" ];
       };{ 
-      name = "email";
+      name = email_s;
       re   = email;
       good = [ "youjinbou.foobar@github.com" ];
       bad  = [ "gggqsdfq@@stuff.com" ; "xxx+yyy@strength..com" ];
@@ -411,7 +425,7 @@ struct
       good = [ "ad" ; "abd"; "acd"; "abcd" ];
       bad  = [ "aa" ; "acbd" ; "abbbbcd" ; "abcccd" ];
       };{ 
-      name = "abcd|bcde";
+      name = "(abcd)|(bcde)";
       re   = abcdOrbcde;
       good = [ "abcd" ; "bcde" ];
       bad  = [ "abce" ; "abde" ; "acde" ];
@@ -551,30 +565,18 @@ struct
 
     open Parser
 
-    let url_s = "http://[-A-Za-z0-9_]+(\\.[-A-Za-z0-9_]+)*(/[-A-Za-z0-9._]+)*(/?)([?]([-A-Za-z0-9_]+=[-A-Za-z0-9_]+)*)?"
 
-    let email_s = 
-      let alpha    = "[A-Za-z]"
-      and alphanum = "[A-Za-z0-9]"
-      and dletter  = "[-_A-Za-z0-9]" in
-      let name  = alpha^alphanum^"*"
-      and dword = dletter^"+" in
-      let domain = "("^dword^"\\.)*"^dword^"\\."^dword
+    let test_parse =
+      let check_dfa x = 
+	let dfa = RE.DFA.make (Parser.parse x.name) in
+	check assert_dfa dfa x.good x.bad
       in
-      name^"([-.+_]"^name^")*@"^domain
+      TestList 
+	(List.map (fun x -> TestLabel (x.name, check_dfa x)) data)
 
-    let test_url () =
-      assert_bool "parser failed on url" (0 = RE.compare url (parse url_s))
-
-    let test_email () =
-      assert_bool "parser failed on email" (0 = RE.compare email (parse email_s))
 
     let test_list = TestLabel (
-      "[ Parser ]",
-      TestList [
-	TestLabel ("url", TestCase test_url);
-	TestLabel ("email", TestCase test_email);
-      ]
+      "[ Parser ]", test_parse
     )
     
   end

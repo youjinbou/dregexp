@@ -840,7 +840,10 @@ struct
       in
       fold re n
 
-    let powerrep b e re = concat (power b re) (repeat (e-b) re)
+    let powerrep b e re = 
+      match b with 
+	  0 -> (repeat (e-b) re)
+	| _ -> concat (power b re) (repeat (e-b) re)
 
     open Conf
 
@@ -898,36 +901,39 @@ struct
       in
       int0 0 s i
 
+    let guard_eof s i (f : unit -> 'a) =
+      if eof s i 
+      then raise (Failure (s,i))
+      else f ()
+	
     let parse_backslash s i =
       if eof s i 
       then succ i, Set (single (to_char BACKSLASH))  (* fix-me: is this correct ? *)
       else succ i, Set (single (to_char (token s i)))
-
-      (* either :
-	 - nothing read
-	 - one int read
-	 - one int and comma read
-      *)
+	
+    (* either :
+       - nothing read
+       - one int read
+       - one int and comma read
+    *)
     let parse_range s i =
       let rec range0 s i =
-	let ni, k = parse_int s i in 
-	range1 k s ni
+	let ni, b = parse_int s i in 
+	range1 b s ni
       and range1 (b : int) s i =
-	if eof s i 
-	then raise (Failure (s,i))
-	else 
-	match token s i with
-	    RBRACE   -> i, Prange (b, None)
-	  | COMMA    -> let ni, k = parse_int s (succ i)
-			in range2 b k s ni
-	  | _        -> raise (Failure (s, i))
+	guard_eof s i (fun () ->
+	  match token s i with
+	      RBRACE   -> succ i, Prange (b, None)
+	    | COMMA    -> let ni, k = parse_int s (succ i)
+			  in range2 b k s ni
+	    | _        -> raise (Failure (s, i))
+	)
       and range2 (b : int) (e : int) s i =
-	if eof s i 
-	then raise (Failure (s,i))
-	else 
-	match token s i with
-	    RBRACE   -> i, Prange (b,Some e)
-	  | _        -> raise (Failure (s, i))
+	guard_eof s i (fun () ->
+	  match token s i with
+	      RBRACE   -> succ i, Prange (b,Some e)
+	    | _        -> raise (Failure (s, i))
+	)
       in 
       range0 s i
 
@@ -938,46 +944,41 @@ struct
       *)
     let parse_set s i =
       let rec set0 cs s i =
-	if eof s i 
-	then raise (Failure (s,i))
-	else 
-	match token s i with
-	  | RBRACKET  -> succ i, cs
-	  | BACKSLASH -> set1 cs (backslash s (succ i)) s (i + 2)
-	  | MINUS     -> raise (Failure (s,i))
-	  | c         -> set1 cs (Conf.to_char c) s (succ i)
+	guard_eof s i (fun () ->
+	  match token s i with
+	    | RBRACKET  -> succ i, cs
+	    | BACKSLASH -> set1 cs (backslash s (succ i)) s (i + 2)
+	    | MINUS     -> raise (Failure (s,i))
+	    | c         -> set1 cs (Conf.to_char c) s (succ i)
+	)
       and set1 cs b s i =
-	if eof s i 
-	then raise (Failure (s,i))
-	else 
-	match token s i with
-	  | RBRACKET  -> succ i, addsingle cs b
-	  | BACKSLASH -> set1 (addsingle cs b) (backslash s (succ i)) s (i + 2)
-	  | MINUS     -> set2 cs b s (succ i)
-	  | c         -> set1 (addsingle cs b) (Conf.to_char c) s (succ i)
+	guard_eof s i (fun () ->
+	  match token s i with
+	    | RBRACKET  -> succ i, addsingle cs b
+	    | BACKSLASH -> set1 (addsingle cs b) (backslash s (succ i)) s (i + 2)
+	    | MINUS     -> set2 cs b s (succ i)
+	    | c         -> set1 (addsingle cs b) (Conf.to_char c) s (succ i)
+	)
       and set2 cs b s i =
-	if eof s i 
-	then raise (Failure (s,i))
-	else 
-	match token s i with
-	  | RBRACKET  -> succ i, addsingle (addsingle cs b) (Conf.to_char MINUS)
-	  | BACKSLASH -> set0 (merge cs (range b (backslash s (succ i)))) s (i + 2)
-	  | c         -> set0 (merge cs (range b (Conf.to_char c))) s (succ i)
+	guard_eof s i (fun () ->
+	  match token s i with
+	    | RBRACKET  -> succ i, addsingle (addsingle cs b) (Conf.to_char MINUS)
+	    | BACKSLASH -> set0 (merge cs (range b (backslash s (succ i)))) s (i + 2)
+	    | c         -> set0 (merge cs (range b (Conf.to_char c))) s (succ i)
+	)
       and backslash s i =
-	if eof s i 
-	then raise (Failure (s,i))
-	else 
-	Conf.to_char (token s i)
+	guard_eof s i (fun () ->
+	  Conf.to_char (token s i)
+	)
       in 
-      if eof s i 
-      then raise (Failure (s,i))
-      else 
-      match token s i with
-	| RBRACKET  -> succ i, EmptySet
-	| CARRET    -> let i, cs = set0 CS.empty s (succ i) in 
-		       i, Not (Set cs)
-	| c         -> let i, cs = set1 CS.empty (Conf.to_char c) s (succ i)in
-		       i, Set cs
+      guard_eof s i (fun () ->
+	match token s i with
+	  | RBRACKET  -> succ i, EmptySet
+	  | CARRET    -> let i, cs = set0 CS.empty s (succ i) in 
+			 i, Not (Set cs)
+	  | c         -> let i, cs = set1 CS.empty (Conf.to_char c) s (succ i)in
+			 i, Set cs
+      )
 
     let parse (s : stream) : re =
       let rec parse s i stack = 
@@ -1003,8 +1004,11 @@ struct
       and shift s i stack =
 	let ni = succ i in
 	if eof s i 
-	then
+	then (
+	  dump stack;
+	  print_newline ();
 	  finish s i stack
+	)
 	else
 	match token s i with
 	    LPARENS    -> parse s ni (LPar::stack)
@@ -1013,7 +1017,7 @@ struct
 	  | STAR       -> parse s ni (Postfix Pstar::stack)
 	  | PLUS       -> parse s ni (Postfix Pplus::stack)
 	  | PIPE       -> parse s ni (Infix Ipipe::stack)
-	  | LBRACE     -> let ni, r = parse_range s i in
+	  | LBRACE     -> let ni, r = parse_range s (succ i) in
 			  parse s ni (Postfix r::stack)
 	  | LBRACKET   -> let ni, r = parse_set s ni in 
 			  parse s ni (R r::stack)

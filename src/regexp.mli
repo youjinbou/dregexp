@@ -110,6 +110,7 @@ sig
 
   end
 
+  (* this module is deprecated *)
   module SRegexp :
   sig
 
