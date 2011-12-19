@@ -60,7 +60,7 @@ sig
   type string_t = S.t
   type char_t = S.Char.t
 
-  module CS : Rangeset.S with type e = C.t and type t = (C.t * C.t) list
+  module CS : Rangeset.S with type e = C.t
 
   type t
   type re = t

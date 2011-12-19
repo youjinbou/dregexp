@@ -28,9 +28,9 @@
 
   Papers on which this code is based:
 
-  [1] Derivatives of regular expressions (Brzozowski)
+  [1] Derivatives of regular expressions (Brzozowski) 1963
 
-  [2] Regular expression derivatives reexamined (Owens,Reppy,Turron)
+  [2] Regular expression derivatives reexamined (Owens,Reppy,Turron) 2008
 
 *)
 
@@ -88,7 +88,7 @@ struct
 
   type 'a pair = 'a * 'a
 
-  module CS = Rangeset.Make(C)
+  module CS : Rangeset.S with type e = C.t  = Rangeset.Make(C)
 
   let sprint s =
     for i = 0 to pred (S.length s) do
@@ -311,10 +311,38 @@ struct
      the inverse operator :
        INVERSE(E) = SIGMA - E where SIGMA is the whole alphabet
   *)
+  (* notes: instead of following the method outlined in [2], we choose
+     to go the whole way and provide as well a merge operator for classes,
+     leading to the minimal set of classes for a given regexp, and thus, 
+     hopefully, a minimal dfa.
+  *)
+  (* implementation :
+     A class is a character set, or its inverse (Sigma - E).
+     The idea is to use the already defined rangeset type, and wrap it
+     in a type denoting if we're considering the rangeset itself, or its 
+     opposit. Then, we can define composition operators, from the rangeset
+     composition operators (intersect, merge, substract).
+  *)
   module Class =
   struct
 
     let pprint_re = pprint
+
+    type t = 
+	CSet of CS.t
+      | CInvSet of CS.t
+
+    let compare a b = 
+      match a, b with
+	  CSet x   , CSet y
+	| CInvSet x, CInvSet y  -> CS.compare x y
+	| _,_                   -> Pervasives.compare a b
+
+
+    let contains (cs : t) (c : C.t) =
+      match cs with
+	  CSet    cs -> CS.contains cs c
+	| CInvSet cs -> not (CS.contains cs c)
 
     (* add an element to a sorted list - no duplicate *)
     let rec add comp l c = 
@@ -324,6 +352,29 @@ struct
 	    | 0            -> l
 	    | v when v < 0 -> x::(add comp xs c)
 	    | _            -> c::l
+
+    let to_string = function
+      | CSet s      -> "["^CS.to_string s^"]"
+      | CInvSet s   -> "^["^CS.to_string s^"]"
+       
+    let pprint x = print_string (to_string x)
+
+    let empty = CSet CS.empty
+
+    let or_op x y = 
+      match x, y  with
+      | CSet s1, CSet s2       -> CSet (CS.merge s1 s2)
+      | CInvSet s1, CInvSet s2 -> CInvSet (CS.intersect s1 s2)
+      | CSet s2, CInvSet s1
+      | CInvSet s1, CSet s2    -> CInvSet (CS.substract s1 s2)
+
+    let and_op x y =
+      match x, y  with
+      | CSet s1, CSet s2       -> CSet (CS.intersect s1 s2)
+      | CInvSet s1, CInvSet s2 -> CInvSet (CS.merge s1 s2)
+      | CSet s2, CInvSet s1
+      | CInvSet s1, CSet s2    -> CSet (CS.substract s2 s1)
+
 
     (* n² combinations of f on l1 l2 elements without duplicate *)
     let mapsqr comp (f: 'a -> 'b -> 'c)  (l1 : 'a list) (l2 : 'b list) : 'c list =
@@ -335,33 +386,7 @@ struct
       in
       List.fold_left f1 [] l1
 
-    type expr = 
-	CSet of CS.t
-      | CInvSet of CS.t
-
-    type t = expr
-
-
-    let contains (cs : t) (c : C.t) =
-      match cs with
-	  CSet    cs -> CS.contains cs c
-	| CInvSet cs -> not (CS.contains cs c)
-
-    let compare a b = 
-      match a, b with
-	  CSet x, CSet y
-	| CInvSet x, CInvSet y  -> CS.compare x y
-	| _,_  -> Pervasives.compare a b
-
     let sort (l : t list) : t list  = List.sort compare l
-
-    let to_string = function
-      | CSet s      -> "["^CS.to_string s^"]"
-      | CInvSet s   -> "^["^CS.to_string s^"]"
-       
-    let pprint x = print_string (to_string x)
-
-    let empty = CSet CS.empty
 
     (* merge class lists, no combination *)
     let rec merge l1 l2 = 
@@ -369,23 +394,21 @@ struct
 	  []    -> l1
 	| x::xs -> merge (add compare l1 x) xs
 
-    (* this operation simplify the combination of x and y *)
-    let inter (x : expr) (y : expr) : expr =
-      match x,y with
-	  CSet s1, CSet s2       -> CSet (CS.intersect s1 s2)
-	| CInvSet s1, CInvSet s2 -> CInvSet (CS.merge s1 s2)
-	| CSet s2, CInvSet s1
-	| CInvSet s1, CSet s2    -> CSet (CS.substract s2 s1)
+      (*
+    let merge (l1 : t list) (l2 : t list) : t list =
+      mapsqr compare or_op l1 l2
+      *)
 
-    let intersect (l1 : expr list) (l2 : expr list) : expr list =
-      mapsqr compare inter l1 l2
+    let intersect (l1 : t list) (l2 : t list) : t list =
+      mapsqr compare and_op l1 l2
 
-    let make (re : re) : expr list =
+
+    let make (re : re) : t list =
       let rec make = function
 	| EmptySet            -> [ CSet CS.empty ]
 	| Epsilon             -> [ CInvSet CS.empty ]
-	| Any                 -> (* sort *) [ (* CSet CS.empty ; *) CInvSet CS.empty ]
-	| Set   s             -> (* sort *) [ CSet s (* ; CInvSet s *) ]
+	| Any                 -> [ CInvSet CS.empty ]
+	| Set   s             -> [ CSet s ]
 	| Concat (c1,c2) when
 	    not (nullable c1) -> make c1
 	| Concat (c1,c2)
@@ -408,7 +431,18 @@ struct
 	  then                    (* any will do *)
 	    Some (C.any)
 	  else                    (* we need to find a char which is not in s *)
-	    Some (C.pred (CS.first s)) (* fix-me: hopefully, first of s has a predecessor *)
+	    let first = CS.first s
+	    and last  = CS.last s in
+	    let rec find_proper_bound iter_b =
+	      match iter_b () with
+	      | CS.Lower x  when 0 != C.compare x first -> Some (C.pred x)
+	      | CS.Higher x when 0 != C.compare x last  -> Some (C.succ x)
+	      | _  -> find_proper_bound iter_b
+	    in
+	    find_proper_bound (CS.iter_bounds s)
+(*
+	    Some (C.pred (CS.first s)) 
+*)
 	)
 
   end
@@ -507,7 +541,6 @@ struct
 	  false, find_class b s 
 	with Not_found -> true, add_class b s
 
-
       (* dfa state transitions---------- *)
 
       let find_transition (b : t) (source : state) (cs : cs) : state =
@@ -536,7 +569,7 @@ struct
 
       (* dfa construction algorithm  --- *) 
 
-      let rec goto (q : re) (b : t) (set : Class.t) : t =
+      let rec goto (q : re) (b : t) (set : Class.t) : t  =
 	match (Class.sample set) with
 	    None   -> b
 	  | Some c ->
@@ -551,15 +584,16 @@ struct
 	List.fold_left (fun b x -> goto q b x) b (Class.make q)
 
       let pprint b = 
-	print_string "state count   : "; print_int (state_count b); print_newline ();
-	print_string "class count   : "; print_int (class_count b); print_newline ();
-	print_endline "states: -----------"; 
+	print_endline "{";
+	print_endline ("state count   : "^string_of_int (state_count b));
+	print_endline ("class count   : "^string_of_int (class_count b));
+	print_endline "states       : "; 
 	pprint_stateset b; 
-	print_endline "classes: ----------"; 
+	print_endline "classes      :"; 
 	pprint_classset b; 
-	print_endline "transitions: ------"; 
+	print_endline "transitions  :"; 
 	pprint_transitions b;
-	print_endline "-------------------"
+	print_endline "}"
 	
       let make re = 
 	let b = {
@@ -571,7 +605,6 @@ struct
 	} in
 	ignore (register_state b re);
 	let res = explore re b in
-(*	pprint b; *)
 	res
 
       (* construct the DFA *)
@@ -600,13 +633,18 @@ struct
 	  
     end (* Builder *)
 
-    let make re = 
-      Builder.build (Builder.make re)
-
     let dump dfa =
       Array.iteri (fun k v -> print_int k; print_string ": "; Class.pprint v; print_newline ()) dfa.classes;
       Array.iteri (fun k v -> print_int k; print_string ": "; print_string (string_of_bool v); print_newline ()) dfa.accept;
       Array.iteri (fun i a -> Printf.printf "%02d : " i; Array.iter (fun v -> Printf.printf "%02d " v) a; print_newline ()) dfa.transitions
+
+    let make re = 
+      let dfa = Builder.build (Builder.make re) in
+      print_endline "-------------------------------------";
+      dump dfa; 
+      print_endline "-------------------------------------";
+      dfa
+
 
     let string_match kind dfa s =
       let ccount = Array.length dfa.classes in
@@ -819,7 +857,6 @@ struct
       
     (** return the character corresponding to the given token *)
     val to_char : token -> C.t
-
 
   end
   (** note : dealing with newline issues is userland responsibility, by crafting 

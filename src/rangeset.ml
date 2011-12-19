@@ -67,6 +67,17 @@ sig
   val first : t -> e
   val last  : t -> e
 
+  (* bounds operations *)
+
+  type bound = Lower of e | Higher of e
+
+  val iter_bounds : t -> (unit -> bound)
+
+(*
+  val bounds : t -> bound list
+*)
+  (* pretty printing *)
+
   val to_string : t -> string
 
   val pprint  : t -> unit
@@ -207,7 +218,6 @@ struct
 	)
     in merge l1 l2 []
 
-
   let substract (l1 : t) (l2 : t) : t =
     let erase_down x y =
       is_first x || E.pred x < y 
@@ -256,5 +266,18 @@ struct
       | []        -> ()
       | (a,b)::xs -> range_iter f a b; iter f xs
     in iter f s
+
+
+  (* bounds *)
+
+  type bound = Lower of e | Higher of e
+
+  let iter_bounds s =
+    let x = ref (s, false) in
+    fun () -> match !x with
+      | (a,b)::xs, false -> x := (a,b)::xs, true; Lower a
+      | (a,b)::xs, true  -> x := xs, true; Higher b
+      | _                -> raise Not_found
+
 
 end

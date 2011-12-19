@@ -60,6 +60,14 @@ sig
   val first : t -> e
   val last  : t -> e
 
+  (* bounds operations *)
+
+  type bound = Lower of e | Higher of e
+
+  val iter_bounds : t -> (unit -> bound)
+
+  (* pretty printing *)
+
   val to_string : t -> string
 
   val pprint : t -> unit
